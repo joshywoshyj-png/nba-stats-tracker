@@ -1,5 +1,4 @@
-
-name: Update NBA Stats
+name: Update NBA Stats and Schedule
 
 on:
   schedule:
@@ -12,29 +11,26 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-
     steps:
       - name: Download repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install libraries
         run: pip install pandas nba_api requests
-
       - name: Update NBA statistics
         run: python update_nba.py
-
-    
-      - name: Save updated CSV
+      - name: Update NBA schedule
+        run: python update_schedule.py
+      - name: Save updated CSV files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add nba_stats.csv nba_game_logs.csv nba_opponent_defense.csv
+          git add nba_stats.csv nba_game_logs.csv nba_opponent_defense.csv nba_schedule.csv
           if ! git diff --cached --quiet; then
-            git commit -m "Update NBA stats"
+            git commit -m "Update NBA stats and schedule"
             git push
           fi
+
