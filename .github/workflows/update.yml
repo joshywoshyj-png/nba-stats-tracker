@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -24,13 +23,17 @@ jobs:
         run: python update_nba.py
       - name: Update NBA schedule
         run: python update_schedule.py
+      - name: Update NBA news and injuries
+        run: python update_news_injuries.py
       - name: Save updated CSV files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add nba_stats.csv nba_game_logs.csv nba_opponent_defense.csv nba_schedule.csv
+          for f in nba_news.csv nba_injuries.csv; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
           if ! git diff --cached --quiet; then
-            git commit -m "Update NBA stats and schedule"
+            git commit -m "Update NBA stats, schedule, news and injuries"
             git push
           fi
-
