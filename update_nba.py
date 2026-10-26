@@ -78,13 +78,14 @@ while day <= TODAY:
                             return float(values.get(key, 0))
                         except (ValueError, TypeError):
                             return 0.0
-
+        
                     records.append({
                         "game_id": game_id,
                         "date": date,
                         "player_id": player.get("id"),
                         "player_name": player.get("displayName"),
                         "team": team_name,
+                        "minutes": played_minutes,
                         "points": number("PTS"),
                         "rebounds": number("REB"),
                         "assists": number("AST"),
