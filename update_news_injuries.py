@@ -1,4 +1,3 @@
-
 """Fetch ESPN NBA news and injury reports for Courtside. Run from repository root."""
 import csv
 import datetime as dt
@@ -95,3 +94,43 @@ def injuries():
         lookup = team_lookup()
     except Exception as exc:
         print(f'WARNING: team lookup unavailable: {exc}')
+        lookup = {}
+    records = []
+    for group in groups:
+        team = extract_team(group, lookup)
+        # League endpoint normally groups injuries by team, with injuries[] within each group.
+        entries = group.get('injuries') if isinstance(group.get('injuries'), list) else [group]
+        for item in entries:
+            athlete = item.get('athlete') or {}
+            if not isinstance(athlete, dict):
+                athlete = {}
+            player = athlete.get('displayName') or athlete.get('fullName') or item.get('displayName') or ''
+            if not player:
+                continue
+            entry_team = item.get('team') or {}
+            abbr = extract_team({'team': entry_team}, lookup) or team
+            details = item.get('details') or {}
+            if not isinstance(details, dict):
+                details = {}
+            status = item.get('status') or details.get('status') or ''
+            if isinstance(status, dict):
+                status = status.get('description') or status.get('name') or status.get('type') or ''
+            comment = item.get('shortComment') or item.get('longComment') or details.get('detail') or ''
+            if not abbr:
+                print(f'WARNING: team abbreviation unresolved for {player}')
+            records.append(dict(player_id=str(athlete.get('id') or item.get('athleteId') or ''), player_name=player, team=abbr, status=string(status), injury=string(item.get('type') or details.get('type') or ''), detail=string(comment), reported_utc=item.get('date') or item.get('lastUpdated') or '', last_updated_utc=NOW))
+    # Empty is a valid result, but show the last refresh time via a separate metadata file.
+    write('nba_injuries.csv', ['player_id','player_name','team','status','injury','detail','reported_utc','last_updated_utc'], records)
+    print('Saved', len(records), 'injury records')
+
+if __name__ == '__main__':
+    failed = []
+    for label, fn in [('news', news), ('injuries', injuries)]:
+        try:
+            fn()
+        except Exception as exc:
+            failed.append(label)
+            print(f'WARNING: {label} update failed: {exc}')
+    if len(failed) == 2:
+        raise SystemExit('Both ESPN updates failed. Existing CSVs were not overwritten.')
+
