@@ -29,3 +29,12 @@ jobs:
         run: python update_nba.py
 
     
+      - name: Save updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add nba_stats.csv nba_game_logs.csv
+          if ! git diff --cached --quiet; then
+            git commit -m "Update NBA stats"
+            git push
+          fi
