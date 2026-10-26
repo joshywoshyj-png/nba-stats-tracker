@@ -69,6 +69,7 @@ while day <= TODAY:
 
                     if played_minutes <= 0:
                         continue
+                    player = athlete.get("athlete", {})
 
                     values = dict(zip(labels, athlete.get("stats", [])))
 
