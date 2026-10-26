@@ -1,36 +1,23 @@
 
-import pandas as pd
-from nba_api.stats.endpoints import leaguedashplayerstats
-from datetime import datetime, timezone
+import requests
 
-print("Fetching 2026-27 NBA player statistics...")
-
-stats = leaguedashplayerstats.LeagueDashPlayerStats(
-    season="2026-27",
-    season_type_all_star="Regular Season",
-    timeout=30
+url = (
+    "https://site.api.espn.com/apis/site/v2/"
+    "sports/basketball/nba/scoreboard"
 )
 
-df = stats.get_data_frames()[0]
+print("Testing ESPN NBA connection...")
 
-# Convert NBA column names to your tracker format
-df = df.rename(columns={
-    "PLAYER_NAME": "player_name",
-    "TEAM_ABBREVIATION": "team",
-    "GP": "games_played",
-    "PTS": "points",
-    "REB": "rebounds",
-    "AST": "assists"
-})
+try:
+    response = requests.get(url, timeout=20)
+    response.raise_for_status()
 
-for stat in ["points", "rebounds", "assists"]:
-    df[stat + "_pg"] = (
-        df[stat] / df["games_played"].replace(0, float("nan"))
-    )
+    data = response.json()
+    games = data.get("events", [])
 
-df["season"] = "2026-27"
-df["last_updated_utc"] = datetime.now(timezone.utc).isoformat()
+    print("SUCCESS! ESPN connection works.")
+    print("Games returned:", len(games))
 
-df.to_csv("nba_stats.csv", index=False)
-
-print("Updated", len(df), "players!")
+except requests.exceptions.RequestException as error:
+    print("ESPN connection failed.")
+    raise
