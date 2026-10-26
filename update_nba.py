@@ -54,10 +54,16 @@ while day <= TODAY:
 
                     # Skip players with zero minutes
                     stats = athlete.get("stats", [])
-                    minutes = stats[0] if stats else "0"
+                    values = dict(zip(labels, stats))
+                    minutes = values.get("MIN", "0")
 
                     try:
-                        played_minutes = float(str(minutes).split(":")[0])
+                        parts = str(minutes).split(":")
+                        played_minutes = (
+                            float(parts[0]) + float(parts[1]) / 60
+                            if len(parts) == 2
+                            else float(parts[0])
+                        )
                     except (ValueError, TypeError):
                         played_minutes = 0
 
@@ -65,7 +71,6 @@ while day <= TODAY:
                         continue
 
                     values = dict(zip(labels, athlete.get("stats", [])))
-                    player = athlete.get("athlete", {})
 
                     def number(key):
                         try:
