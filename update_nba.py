@@ -47,6 +47,23 @@ while day <= TODAY:
                 labels = group.get("labels", [])
 
                 for athlete in group.get("athletes", []):
+                    
+                    # Skip players who did not play
+                    if athlete.get("didNotPlay", False):
+                        continue
+
+                    # Skip players with zero minutes
+                    stats = athlete.get("stats", [])
+                    minutes = stats[0] if stats else "0"
+
+                    try:
+                        played_minutes = float(str(minutes).split(":")[0])
+                    except (ValueError, TypeError):
+                        played_minutes = 0
+
+                    if played_minutes <= 0:
+                        continue
+
                     values = dict(zip(labels, athlete.get("stats", [])))
                     player = athlete.get("athlete", {})
 
