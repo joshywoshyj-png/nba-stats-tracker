@@ -1,6 +1,7 @@
+
 /* COURTSIDE — NBA Matchup Predictor
-   Points + rebounds upgraded.
-   Keeps today's games, including games already started.
+   Upgraded: Points, Rebounds, Assists
+   Shows today's games, including games in progress.
 */
 (async function () {
   "use strict";
@@ -237,7 +238,7 @@
       const games = n(d.player_games);
       let raw = n(d[stat + "_allowed_pg"]) / average;
 
-      if (stat === "points" || stat === "rebounds") {
+      if (["points", "rebounds", "assists"].includes(stat)) {
         raw *= defensePaceCorrection(opponent);
       }
 
@@ -315,6 +316,10 @@
         rate = .50 * seasonRate +
                .30 * last10 +
                .20 * last5;
+      } else if (stat === "assists") {
+        rate = .45 * seasonRate +
+               .35 * last10 +
+               .20 * last5;
       } else {
         const valid = recent.filter(l =>
           minutes(l) > 0 &&
@@ -335,7 +340,7 @@
         defenseFactor(defenseRow, stat, opponent);
 
       const matchupPace =
-        stat === "points" || stat === "rebounds"
+        ["points", "rebounds", "assists"].includes(stat)
           ? paceFactor(team, opponent)
           : 1;
 
@@ -354,7 +359,7 @@
       <p class="muted">
         Current-season estimates using recent games,
         opponent defense, playing time and matchup pace.
-        Points and rebounds use upgraded formulas.
+        Points, rebounds and assists use upgraded formulas.
         These are experimental estimates, not live
         in-game projections.
       </p>
@@ -412,7 +417,7 @@
             logsByPlayer.get(String(player.player_id)) || []
           ).filter(l =>
             String(l.date || "").slice(0, 10) <
-            String(game.date_utc || "").slice(0, 10)
+            localDateKey(game.date_utc)
           ).slice(0, 10);
 
           const position = recent.find(
@@ -483,8 +488,7 @@
           Other injury statuses are shown but do not
           guarantee availability. Defense sample refers
           to opposing player appearances at the position.
-          Estimates use pregame season data and are
-          not updated from live box scores.
+          Estimates are not updated from live box scores.
         </p>
         <div class="scroll">
           <table>
