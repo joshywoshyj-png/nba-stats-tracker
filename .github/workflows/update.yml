@@ -34,7 +34,7 @@ jobs:
       - name: Update NBA news and injuries
         run: python update_news_injuries.py
 
-      - name: Save prediction history and actual results
+      - name: Update prediction accuracy
         run: python update_accuracy.py
 
       - name: Save updated CSV files
@@ -42,19 +42,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add nba_stats.csv
-          git add nba_game_logs.csv
-          git add nba_opponent_defense.csv
-          git add nba_team_pace.csv
-          git add nba_schedule.csv
-
-          for f in nba_news.csv nba_injuries.csv nba_prediction_history.csv nba_prediction_results.csv; do
-            if [ -f "$f" ]; then
-              git add "$f"
-            fi
-          done
+          git add \
+            nba_stats.csv \
+            nba_game_logs.csv \
+            nba_opponent_defense.csv \
+            nba_team_pace.csv \
+            nba_schedule.csv \
+            nba_news.csv \
+            nba_injuries.csv \
+            nba_prediction_history.csv \
+            nba_prediction_results.csv
 
           if ! git diff --cached --quiet; then
-            git commit -m "Update NBA stats, schedule, injuries and prediction accuracy"
+            git commit -m "Update Courtside NBA data and accuracy"
             git push
           fi
