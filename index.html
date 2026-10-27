@@ -65,10 +65,7 @@
       letter-spacing: 1px;
     }
 
-    .muted, .small {
-      color: var(--muted);
-    }
-
+    .muted, .small { color: var(--muted); }
     .small { font-size: 12px; }
 
     .hero { margin: 35px 0 25px; }
@@ -158,7 +155,6 @@
     }
 
     .chartbox { height: 290px; }
-
     .scroll { overflow-x: auto; }
 
     table {
@@ -261,7 +257,9 @@
         <div class="chartbox">
           <canvas id="chart"></canvas>
         </div>
-        <p class="small">Points, rebounds, and assists by game</p>
+        <p class="small">
+          Points, rebounds, and assists by game
+        </p>
       </section>
 
       <section class="panel">
@@ -278,10 +276,17 @@
         <table>
           <thead>
             <tr>
-              <th>Date</th><th>Opponent</th><th>MIN</th>
-              <th>PTS</th><th>REB</th><th>AST</th>
-              <th>3PM</th><th>3PA</th>
-              <th>STL</th><th>BLK</th><th>TO</th>
+              <th>Date</th>
+              <th>Opponent</th>
+              <th>MIN</th>
+              <th>PTS</th>
+              <th>REB</th>
+              <th>AST</th>
+              <th>3PM</th>
+              <th>3PA</th>
+              <th>STL</th>
+              <th>BLK</th>
+              <th>TO</th>
             </tr>
           </thead>
           <tbody id="gameRows"></tbody>
@@ -289,25 +294,7 @@
       </div>
     </section>
 
-    <section class="panel">
-      <h2>Opponent Defense by Position</h2>
-      <div class="toolbar"
-           style="grid-template-columns:1fr 1fr">
-        <select id="opponent"></select>
-        <select id="position">
-          <option>PG</option>
-          <option>SG</option>
-          <option>SF</option>
-          <option>PF</option>
-          <option>C</option>
-        </select>
-      </div>
-      <div id="defenseCards" class="cards"></div>
-      <p class="small">
-        Defensive averages are based on opposing player
-        appearances. Small samples may be less reliable.
-      </p>
-    </section>
+    <!-- Opponent Defense by Position display removed -->
 
     <section id="cs-schedule"></section>
 
@@ -324,22 +311,27 @@
       "https://raw.githubusercontent.com/joshywoshyj-png/nba-stats-tracker/main/";
 
     const $ = id => document.getElementById(id);
-    const num = x => Number.isFinite(Number(x))
-      ? Number(x) : 0;
-    const fmt = x => x === "" || x == null
-      ? "—" : num(x).toFixed(1);
+
+    const num = x =>
+      x === "" || x == null || !Number.isFinite(Number(x))
+        ? 0 : Number(x);
+
+    const fmt = x =>
+      x === "" || x == null ? "—" : num(x).toFixed(1);
 
     const esc = x => String(x ?? "").replace(
       /[&<>"']/g,
       c => ({
-        "&":"&amp;", "<":"&lt;", ">":"&gt;",
-        '"':"&quot;", "'":"&#39;"
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
       })[c]
     );
 
     let season = [];
     let logs = [];
-    let defense = [];
     let chart = null;
 
     function csvParse(text) {
@@ -353,7 +345,9 @@
           if (quoted && text[i + 1] === '"') {
             cell += '"';
             i++;
-          } else quoted = !quoted;
+          } else {
+            quoted = !quoted;
+          }
         } else if (c === "," && !quoted) {
           row.push(cell);
           cell = "";
@@ -412,6 +406,7 @@
       const player = season.find(p =>
         String(p.player_id) === $("player").value
       );
+
       if (!player) return;
 
       $("playerTitle").textContent = player.player_name;
@@ -496,10 +491,14 @@
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-              legend: { labels: { color: "#cbd5e1" } }
+              legend: {
+                labels: { color: "#cbd5e1" }
+              }
             },
             scales: {
-              x: { ticks: { color: "#a5b3c8" } },
+              x: {
+                ticks: { color: "#a5b3c8" }
+              },
               y: {
                 beginAtZero: true,
                 ticks: { color: "#a5b3c8" }
@@ -510,56 +509,25 @@
       }
     }
 
-    function renderDefense() {
-      const team = $("opponent").value;
-      const position = $("position").value;
-
-      const row = defense.find(d =>
-        d.opponent === team &&
-        d.position === position &&
-        d.position_type === "position"
-      );
-
-      if (!row) {
-        $("defenseCards").innerHTML =
-          '<p class="muted">No defensive data available.</p>';
-        return;
-      }
-
-      const fields = [
-        ["points_allowed_pg", "PTS Allowed"],
-        ["rebounds_allowed_pg", "REB Allowed"],
-        ["assists_allowed_pg", "AST Allowed"],
-        ["three_pointers_allowed_pg", "3PM Allowed"],
-        ["steals_allowed_pg", "STL Allowed"],
-        ["blocks_allowed_pg", "BLK Allowed"]
-      ];
-
-      $("defenseCards").innerHTML = fields.map(
-        ([key, label]) => card(label, fmt(row[key]))
-      ).join("");
-    }
-
     async function loadData() {
       $("status").textContent = "Loading data...";
       $("refresh").disabled = true;
       $("error").style.display = "none";
 
       try {
-        const [s, l, d] = await Promise.all([
+        const [s, l] = await Promise.all([
           csv("nba_stats.csv"),
-          csv("nba_game_logs.csv"),
-          csv("nba_opponent_defense.csv")
+          csv("nba_game_logs.csv")
         ]);
 
-        if (!s.length) throw Error("Player stats are empty.");
+        if (!s.length) {
+          throw Error("Player stats are empty.");
+        }
 
         const previous = $("player").value;
-        const oldOpponent = $("opponent").value;
 
         season = s;
         logs = l;
-        defense = d;
 
         const ordered = [...season].sort((a, b) =>
           String(a.player_name).localeCompare(
@@ -579,22 +547,11 @@
 
         if (ordered.some(p =>
           String(p.player_id) === previous
-        )) $("player").value = previous;
-
-        const teams = [...new Set(
-          defense.map(d => d.opponent).filter(Boolean)
-        )].sort();
-
-        $("opponent").innerHTML = teams.map(t =>
-          `<option value="${esc(t)}">${esc(t)}</option>`
-        ).join("");
-
-        if (teams.includes(oldOpponent)) {
-          $("opponent").value = oldOpponent;
+        )) {
+          $("player").value = previous;
         }
 
         renderPlayer();
-        renderDefense();
 
         $("status").textContent =
           `Loaded · ${season.length} players`;
@@ -612,11 +569,10 @@
     $("refresh").addEventListener("click", loadData);
     $("player").addEventListener("change", renderPlayer);
     $("lastN").addEventListener("change", renderPlayer);
-    $("opponent").addEventListener("change", renderDefense);
-    $("position").addEventListener("change", renderDefense);
 
     function searchPlayer() {
       const q = $("search").value.trim().toLowerCase();
+
       const found = season.find(p =>
         String(p.player_name).toLowerCase() === q
       ) || season.find(p =>
@@ -630,6 +586,7 @@
     }
 
     $("search").addEventListener("change", searchPlayer);
+
     $("search").addEventListener("keydown", e => {
       if (e.key === "Enter") {
         searchPlayer();
@@ -649,7 +606,7 @@
   <!-- Original accuracy dashboard -->
   <script src="courtside_accuracy_widget.js" defer></script>
 
-  <!-- NEW detailed accuracy dashboard -->
+  <!-- Detailed accuracy dashboard -->
   <script src="courtside_accuracy_plus.js" defer></script>
 
 </body>
