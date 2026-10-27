@@ -45,6 +45,7 @@ jobs:
           git add nba_stats.csv
           git add nba_game_logs.csv
           git add nba_opponent_defense.csv
+          git add nba_team_pace.csv
           git add nba_schedule.csv
 
           for f in nba_news.csv nba_injuries.csv nba_prediction_history.csv nba_prediction_results.csv; do
