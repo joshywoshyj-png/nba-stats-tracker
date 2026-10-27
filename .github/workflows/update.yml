@@ -1,59 +1,35 @@
-
 name: Update NBA Stats and Schedule
-
 on:
   schedule:
-    - cron: "0 12 * * *"
+    - cron: '0 12 * * *'
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   update:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Install libraries
-        run: pip install pandas nba_api requests
-
-      - name: Update NBA statistics
+          python-version: '3.12'
+      - run: pip install pandas requests
+      - name: Update NBA data
         run: python update_nba.py
-
-      - name: Update NBA schedule
+      - name: Update schedule
         run: python update_schedule.py
-
-      - name: Update NBA news and injuries
+      - name: Update news and injuries
         run: python update_news_injuries.py
-
-      - name: Update prediction accuracy
+      - name: Score pregame predictions
         run: python update_accuracy.py
-
-      - name: Save updated CSV files
+      - name: Evaluate formulas
+        run: python backtest_formulas.py
+      - name: Commit updated data
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add \
-            nba_stats.csv \
-            nba_game_logs.csv \
-            nba_opponent_defense.csv \
-            nba_team_pace.csv \
-            nba_schedule.csv \
-            nba_news.csv \
-            nba_injuries.csv \
-            nba_prediction_history.csv \
-            nba_prediction_results.csv
-
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add nba_*.csv
           if ! git diff --cached --quiet; then
-            git commit -m "Update Courtside NBA data and accuracy"
+            git commit -m 'Update Courtside NBA data and accuracy'
             git push
           fi
