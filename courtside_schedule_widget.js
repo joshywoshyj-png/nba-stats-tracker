@@ -234,7 +234,13 @@
         Number.isFinite(Number(r['error_'+stat])) &&
         String(r['error_'+stat] ?? '').trim() !== ''
       );
-      if (eligible.length < 30) return '—';
+      // Always show a provisional range, even before 30 scored games.
+      // The normal-based width is a starting estimate, not calibrated 80% coverage.
+      if (eligible.length < 30) {
+        const halfWidth = 1.28155 * playerSD;
+        return `${Math.max(0, prediction-halfWidth).toFixed(1)}–${
+          (prediction+halfWidth).toFixed(1)}*`;
+      }
       const pooled = eligible.map(r => Number(r['error_'+stat]));
       const individual = eligible.filter(r => String(r.player_id) ===
         String(player.player_id)).map(r => Number(r['error_'+stat]));
@@ -487,7 +493,7 @@
         <p class="muted">OUT players have no estimates.
         Predictions are pregame-style, not live box-score updates.
         Ranges target 80% historical coverage using prior scored games and player-specific
-        recent variability. Coverage is experimental, not guaranteed; ranges require 30+ past results.</p>
+        recent variability. Coverage is experimental, not guaranteed. An asterisk (*) marks provisional ranges until 30 prior scored results are available.</p>
         <div class="scroll"><table><thead><tr>
           <th>Player</th><th>Team</th><th>Opponent</th>
           <th>Pos</th><th>Injury</th><th>Defense sample</th><th>Est. MIN</th>
