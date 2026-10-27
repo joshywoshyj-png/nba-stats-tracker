@@ -195,18 +195,57 @@
         load("nba_prediction_results.csv").catch(() => [])
       ]);
 
-    // Empirical errors are descriptive, not guaranteed future coverage.
-    const rangeErrors = {};
-    for (const stat of STATS) {
-      const errors = scored.map(r => {
-        const a = Number(r["actual_" + stat]);
-        const b = Number(r["pred_" + stat]);
-        return String(r["actual_" + stat] ?? "") !== "" &&
-          String(r["pred_" + stat] ?? "") !== "" &&
-          Number.isFinite(a) && Number.isFinite(b) ? Math.abs(a - b) : null;
-      }).filter(v => v !== null).sort((a,b) => a-b);
-      rangeErrors[stat] = errors.length >= 30
-        ? errors[Math.ceil(.8 * errors.length) - 1] : null;
+    // Chronological residual calibration. Older games are used to
+    // estimate the next game's uncertainty, never the other way around.
+    const pastResults = scored.filter(r =>
+      Number.isFinite(Date.parse(r.tipoff_utc || r.game_date))
+    ).sort((a,b) => Date.parse(a.tipoff_utc || a.game_date) -
+                     Date.parse(b.tipoff_utc || b.game_date));
+
+    function quantile(values, q) {
+      if (!values.length) return null;
+      const a = [...values].sort((x,y) => x-y);
+      return a[Math.max(0, Math.ceil(q * (a.length + 1)) - 1)
+        < a.length ? Math.max(0, Math.ceil(q * (a.length + 1)) - 1) : a.length-1];
+    }
+
+    function variability(stat, recent, seasonRate, projected) {
+      const values = recent.slice(0,20).filter(l =>
+        minutes(l) > 0 && String(l[stat] ?? '').trim() !== ''
+      ).map(l => n(l[stat]) * projected / minutes(l));
+      const mean = values.length ? values.reduce((a,b)=>a+b,0)/values.length : 0;
+      const sd = values.length >= 3 ? Math.sqrt(
+        values.reduce((a,v)=>a+(v-mean)**2,0)/(values.length-1)
+      ) : Math.max(1, Math.sqrt(Math.max(1,seasonRate*projected)));
+      // Shrink unstable small samples toward a sensible count-stat scale.
+      const prior = Math.max(.5, Math.sqrt(Math.max(1,seasonRate*projected)));
+      return Math.max(.5, Math.sqrt((values.length*sd*sd + 8*prior*prior)/
+        (values.length+8)));
+    }
+
+    function rangeText(stat, prediction, player, recent, projected, gameDate) {
+      const rate = n(player[stat+'_pg']) / Math.max(1,n(player.minutes_pg));
+      const playerSD = variability(stat, recent, rate, projected);
+      const prior = Math.max(.5, Math.sqrt(Math.max(1,prediction)));
+      const widthScale = Math.max(.65, Math.min(1.8, playerSD / prior));
+      const gameTime = Date.parse(gameDate);
+      const eligible = pastResults.filter(r =>
+        Date.parse(r.tipoff_utc || r.game_date) < gameTime &&
+        Number.isFinite(Number(r['error_'+stat])) &&
+        String(r['error_'+stat] ?? '').trim() !== ''
+      );
+      if (eligible.length < 30) return '—';
+      const pooled = eligible.map(r => Number(r['error_'+stat]));
+      const individual = eligible.filter(r => String(r.player_id) ===
+        String(player.player_id)).map(r => Number(r['error_'+stat]));
+      // Player-specific residuals are blended only with enough examples.
+      const pooledQ = quantile(pooled, .8);
+      const individualQ = individual.length >= 8 ? quantile(individual,.8) : pooledQ;
+      const blend = individual.length / (individual.length + 25);
+      const halfWidth = Math.max(.25, (pooledQ*(1-blend) +
+        individualQ*blend) * widthScale);
+      return `${Math.max(0,prediction-halfWidth).toFixed(1)}–${
+        (prediction+halfWidth).toFixed(1)}`;
     }
     function projectedMinutes(player, recent, absent, healthyMinutes) {
       const season = n(player.minutes_pg);
@@ -219,11 +258,6 @@
       const share = healthyMinutes > 0 ? season / healthyMinutes : 0;
       const extra = Math.min(base * .12, absent * share * .35);
       return clamp(base + trend + extra, 0, 48);
-    }
-    function rangeText(stat, prediction) {
-      const e = rangeErrors[stat];
-      if (e === null) return "—";
-      return `${Math.max(0, prediction-e).toFixed(1)}–${(prediction+e).toFixed(1)}`;
     }
     const paceMap = new Map(paceRows.map(x => [norm(x.team), x]));
     const logsMap = new Map();
@@ -431,7 +465,7 @@
               d, opponent, team, boost, localDateKey(game.date_utc)));
           const values = predictions.map(v => v === null ? "—" : v.toFixed(1));
           const ranges = predictions.map((v, i) => v === null ? "—" :
-            rangeText(STATS[i], v));
+            rangeText(STATS[i], v, player, recent, projected, game.date_utc));
 
           rows.push(`<tr>
             <td>${esc(player.player_name)}</td>
@@ -452,8 +486,8 @@
         ${esc(game.status_detail || game.status || "Scheduled")}</p>
         <p class="muted">OUT players have no estimates.
         Predictions are pregame-style, not live box-score updates.
-        Ranges use the 80th percentile of historical absolute errors when 30+ scored
-        games exist. They are illustrative and are not validated 80% coverage intervals.</p>
+        Ranges target 80% historical coverage using prior scored games and player-specific
+        recent variability. Coverage is experimental, not guaranteed; ranges require 30+ past results.</p>
         <div class="scroll"><table><thead><tr>
           <th>Player</th><th>Team</th><th>Opponent</th>
           <th>Pos</th><th>Injury</th><th>Defense sample</th><th>Est. MIN</th>

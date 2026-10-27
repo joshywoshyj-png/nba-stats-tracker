@@ -33,13 +33,15 @@ HISTORY_FIELDS = [
     "projected_minutes", "position", "baseline_games"
 ] + [f"pred_{s}" for s in STATS] + [
     f"baseline_{s}" for s in STATS
+] + [f"range_low_{s}" for s in STATS] + [
+    f"range_high_{s}" for s in STATS
 ]
 
 RESULT_FIELDS = HISTORY_FIELDS + [
     "actual_minutes"
 ] + [f"actual_{s}" for s in STATS] + [
     f"error_{s}" for s in STATS
-]
+] + [f"covered_{s}" for s in STATS]
 
 ATTEMPT_KEYS = [
     "three_pointers_attempted", "three_point_attempts",
@@ -265,6 +267,44 @@ def predict_three(player, recent, projected, df, pf, boost):
     )
 
 
+def quantile(values, q=.8):
+    if not values:
+        return None
+    values = sorted(values)
+    idx = min(len(values) - 1, max(0, math.ceil(q * (len(values) + 1)) - 1))
+    return values[idx]
+
+
+def player_variability(stat, recent, player, projected, prediction):
+    vals = [n(row.get(stat)) * projected / minutes(row)
+            for row in recent[:20]
+            if minutes(row) > 0 and str(row.get(stat, "")).strip() != ""]
+    mean = sum(vals) / len(vals) if vals else 0
+    sd = math.sqrt(sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)) \
+        if len(vals) >= 3 else math.sqrt(max(1, prediction))
+    prior = max(.5, math.sqrt(max(1, prediction)))
+    return max(.5, math.sqrt((len(vals) * sd * sd + 8 * prior * prior) /
+                               (len(vals) + 8)))
+
+
+def calibrated_half_width(stat, player, recent, projected, prediction,
+                          past_results, tip):
+    eligible = [r for r in past_results
+                if (parse_time(r.get("tipoff_utc")) or datetime.max.replace(tzinfo=UTC)) < tip
+                and str(r.get("error_" + stat, "")).strip() != ""]
+    if len(eligible) < 30:
+        return None
+    pooled = quantile([n(r.get("error_" + stat)) for r in eligible])
+    personal = [n(r.get("error_" + stat)) for r in eligible
+                if str(r.get("player_id")) == str(player.get("player_id"))]
+    individual = quantile(personal) if len(personal) >= 8 else pooled
+    blend = len(personal) / (len(personal) + 25)
+    prior = max(.5, math.sqrt(max(1, prediction)))
+    scale = clamp(player_variability(stat, recent, player, projected, prediction) /
+                  prior, .65, 1.8)
+    return max(.25, (pooled * (1 - blend) + individual * blend) * scale)
+
+
 def main():
     players = read_csv("nba_stats.csv")
     logs = read_csv("nba_game_logs.csv")
@@ -273,6 +313,7 @@ def main():
     pace = read_csv("nba_team_pace.csv")
     injuries = read_csv("nba_injuries.csv")
     history = read_csv(HISTORY)
+    previous_results = read_csv(RESULTS)
 
     print("COURTSIDE ACCURACY UPDATE")
     print("Players:", len(players))
@@ -641,6 +682,18 @@ def main():
                 record["baseline_" + stat] = round(
                     baseline, 3
                 )
+                width = calibrated_half_width(
+                    stat, player, recent, projected, prediction,
+                    previous_results, tip
+                )
+                record["range_low_" + stat] = (
+                    round(max(0, prediction - width), 3)
+                    if width is not None else ""
+                )
+                record["range_high_" + stat] = (
+                    round(prediction + width, 3)
+                    if width is not None else ""
+                )
 
             history.append(record)
             existing.add((game_key, pid))
@@ -748,6 +801,12 @@ def main():
                 abs(predicted_value - actual_value),
                 3
             )
+            low = record.get("range_low_" + stat, "")
+            high = record.get("range_high_" + stat, "")
+            result["covered_" + stat] = (
+                int(n(low) <= actual_value <= n(high))
+                if str(low).strip() and str(high).strip() else ""
+            )
 
         results.append(result)
 
@@ -779,3 +838,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
