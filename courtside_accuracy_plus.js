@@ -1,24 +1,48 @@
-/* Courtside enhanced prediction-vs-actual dashboard. */
+/* Courtside rolling accuracy trends. No Recent Predictions vs Results table. */
 (async function () {
   'use strict';
-  const BASE='https://raw.githubusercontent.com/joshywoshyj-png/nba-stats-tracker/main/';
-  const STATS=[['points','PTS'],['rebounds','REB'],['assists','AST'],['three_pointers','3PM'],['steals','STL'],['blocks','BLK']];
-  const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const num=x=>Number.isFinite(Number(x))?Number(x):0;
-  function csv(text){const rows=[];let row=[],cell='',q=false;for(let i=0;i<text.length;i++){let c=text[i];if(c==='"'){if(q&&text[i+1]==='"'){cell+='"';i++;}else q=!q;}else if(c===','&&!q){row.push(cell);cell='';}else if((c==='\n'||c==='\r')&&!q){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(x=>x!==''))rows.push(row);row=[];cell='';}else cell+=c;}if(cell||row.length){row.push(cell);rows.push(row);}const headers=rows.shift()||[];return rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,r[i]??''])));}
+  const BASE = 'https://raw.githubusercontent.com/joshywoshyj-png/nba-stats-tracker/main/';
+  const STATS = [['points','PTS'],['rebounds','REB'],['assists','AST'],['three_pointers','3PM'],['steals','STL'],['blocks','BLK']];
+  const esc = x => String(x ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function csv(text) {
+    const rows=[]; let row=[],cell='',q=false;
+    for(let i=0;i<text.length;i++) {const c=text[i];
+      if(c==='"') {if(q&&text[i+1]==='"'){cell+='"';i++;}else q=!q;}
+      else if(c===','&&!q){row.push(cell);cell='';}
+      else if((c==='\n'||c==='\r')&&!q){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(x=>x!==''))rows.push(row);row=[];cell='';}
+      else cell+=c;
+    }
+    if(cell||row.length){row.push(cell);rows.push(row);}
+    const h=(rows.shift()||[]).map(x=>x.replace(/^\uFEFF/,''));
+    return rows.map(r=>Object.fromEntries(h.map((x,i)=>[x,r[i]??''])));
+  }
   let root=document.getElementById('cs-accuracy-plus');
   if(!root){root=document.createElement('section');root.id='cs-accuracy-plus';(document.querySelector('main')||document.body).appendChild(root);}
-  root.style.cssText='max-width:1200px;margin:24px auto;padding:22px;border:1px solid #353944;border-radius:18px;background:#14171f;color:#f5f6fa;font:14px system-ui,sans-serif';
-  root.innerHTML='<h2>Prediction Accuracy — Detailed</h2><p>Loading completed-game results...</p>';
-  try{
-    const res=await fetch(BASE+'nba_prediction_results.csv?v='+Date.now(),{cache:'no-store'});
-    if(!res.ok)throw Error('Results CSV unavailable (HTTP '+res.status+')');
-    const rows=csv(await res.text()).filter(r=>r.player_id&&r.actual_points!==undefined&&r.pred_points!==undefined);
-    if(!rows.length){root.innerHTML='<h2>Prediction Accuracy — Detailed</h2><p>No scored pregame predictions yet. The tracker will populate after completed games with saved pregame snapshots.</p>';return;}
-    const options=[...new Set(rows.map(r=>r.player_name).filter(Boolean))].sort();
-    root.innerHTML=`<h2>Prediction Accuracy — Detailed</h2><p>${rows.length} scored player-games · lower MAE means smaller average prediction error.</p><label>Player <select id="csa-player" style="background:#202530;color:white;padding:9px;border-radius:8px"><option value="">All players</option>${options.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label><div id="csa-data"></div>`;
-    const selector=root.querySelector('#csa-player'),out=root.querySelector('#csa-data');
-    function render(){const data=selector.value?rows.filter(r=>r.player_name===selector.value):rows;const summary=STATS.map(([key,label])=>{const valid=data.filter(r=>r['pred_'+key]!==''&&r['actual_'+key]!=='');const mae=valid.length?valid.reduce((sum,r)=>sum+Math.abs(num(r['pred_'+key])-num(r['actual_'+key])),0)/valid.length:null;return `<tr><td>${label}</td><td>${mae===null?'—':mae.toFixed(2)}</td><td>${valid.length}</td></tr>`;}).join('');const detail=data.slice().sort((a,b)=>String(b.game_date).localeCompare(String(a.game_date))).slice(0,100).map(r=>`<tr><td>${esc(r.game_date)}</td><td>${esc(r.player_name)}</td><td>${esc(r.opponent)}</td>${STATS.map(([key])=>`<td>${num(r['pred_'+key]).toFixed(1)} / ${num(r['actual_'+key]).toFixed(0)}</td>`).join('')}</tr>`).join('');out.innerHTML=`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Stat</th><th>Mean absolute error</th><th>Games</th></tr></thead><tbody>${summary}</tbody></table><h3>Predicted / Actual</h3><p>Showing up to 100 most recent player-games.</p><table style="min-width:850px;width:100%;border-collapse:collapse"><thead><tr><th>Date</th><th>Player</th><th>Opponent</th>${STATS.map(([,label])=>`<th>${label}</th>`).join('')}</tr></thead><tbody>${detail}</tbody></table></div>`;out.querySelectorAll('th,td').forEach(x=>x.style.cssText='padding:9px;border-bottom:1px solid #343844;text-align:left');}
-    selector.addEventListener('change',render);render();
-  }catch(err){root.innerHTML='<h2>Prediction Accuracy — Detailed</h2><p>'+esc(err.message)+'</p>';}
+  root.classList.add('panel');
+  root.innerHTML='<h2>Accuracy Trends Over Time</h2><p>Loading saved results...</p>';
+  try {
+    const r=await fetch(BASE+'nba_prediction_results.csv?v='+Date.now(),{cache:'no-store'});
+    if(!r.ok)throw Error('Prediction results unavailable');
+    const rows=csv(await r.text()).filter(x=>x.game_date).sort((a,b)=>a.game_date.localeCompare(b.game_date));
+    if(!rows.length){root.innerHTML='<h2>Accuracy Trends Over Time</h2><p>No completed scored games yet.</p>';return;}
+    root.innerHTML=`<h2>Accuracy Trends Over Time</h2><p class="small">Rolling 30 player-game MAE, compared with the season-average baseline. The last point includes the most recent scored game.</p><label for="csa-stat">Statistic</label> <select id="csa-stat">${STATS.map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select><div style="height:290px;margin-top:14px"><canvas id="csa-trend"></canvas></div><p id="csa-summary" class="small"></p>`;
+    const sel=root.querySelector('#csa-stat'),summary=root.querySelector('#csa-summary');let chart=null;
+    function draw(){
+      const k=sel.value;
+      const data=rows.filter(x=>['pred_','baseline_','actual_'].every(prefix=>x[prefix+k]!==''&&Number.isFinite(Number(x[prefix+k]))));
+      if(chart){chart.destroy();chart=null;}
+      if(!data.length){summary.textContent='No valid scored results for this statistic.';return;}
+      const windowSize=30;
+      const points=data.map((r,i)=>{
+        const window=data.slice(Math.max(0,i-windowSize+1),i+1);
+        const mae=prefix=>window.reduce((sum,x)=>sum+Math.abs(Number(x[prefix+k])-Number(x['actual_'+k])),0)/window.length;
+        return {date:r.game_date,model:mae('pred_'),baseline:mae('baseline_')};
+      });
+      const last=points[points.length-1];
+      summary.textContent=`Latest rolling MAE: Courtside ${last.model.toFixed(2)} · Season average ${last.baseline.toFixed(2)} · ${Math.min(windowSize,data.length)} player-games. Early samples are preliminary.`;
+      if(typeof Chart==='undefined'){return;}
+      chart=new Chart(root.querySelector('#csa-trend'),{type:'line',data:{labels:points.map(p=>p.date),datasets:[{label:'Courtside MAE',data:points.map(p=>p.model),borderColor:'#ef4444',pointRadius:0,tension:.15},{label:'Season-average MAE',data:points.map(p=>p.baseline),borderColor:'#60a5fa',pointRadius:0,tension:.15}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#cbd5e1'}}},scales:{x:{ticks:{color:'#a5b3c8',maxTicksLimit:8}},y:{beginAtZero:true,ticks:{color:'#a5b3c8'}}}}});
+    }
+    sel.addEventListener('change',draw);draw();
+  }catch(e){root.innerHTML='<h2>Accuracy Trends Over Time</h2><p>'+esc(e.message)+'</p>';}
 })();

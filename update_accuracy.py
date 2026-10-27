@@ -346,7 +346,7 @@ def main():
 
         return clamp(league / opp, .85, 1.15)
 
-    def defense_factor(row, stat, opponent):
+    def defense_factor(row, stat, opponent, game_day):
         if not row:
             return 1.0
 
@@ -360,10 +360,29 @@ def main():
         if games <= 0 or total <= 0:
             return 1.0
 
-        raw = (
-            n(row.get(stat + "_allowed_pg"))
-            / (total / games)
+        season_allowed = n(row.get(stat + "_allowed_pg"))
+        recent_samples = [
+            log for log in logs
+            if norm(log.get("opponent")) == norm(opponent)
+            and date_value(log.get("date"))
+            and date_value(log.get("date")) < game_day
+            and minutes(log) > 0
+            and str(log.get(stat, "")).strip() != ""
+            and (
+                norm(log.get("position")) == norm(row.get("position"))
+                if row.get("position_type") == "position"
+                else position_group(log.get("position")) == norm(row.get("position"))
+            )
+        ]
+        recent_samples.sort(key=lambda log: date_value(log.get("date")), reverse=True)
+        recent_samples = recent_samples[:25]
+        recent_allowed = (
+            sum(n(log.get(stat)) for log in recent_samples) / len(recent_samples)
+            if recent_samples else season_allowed
         )
+        recent_weight = min(.25, len(recent_samples) / 100)
+        blended = season_allowed * (1-recent_weight) + recent_allowed * recent_weight
+        raw = blended / (total / games)
 
         if stat in PACE_STATS:
             raw *= defense_pace(opponent)
@@ -491,11 +510,20 @@ def main():
                 if played else season_minutes
             )
 
-            base_projected = clamp(
-                .75 * season_minutes
-                + .25 * recent_average,
-                0, 48
+            last10_minutes = played[:10]
+            last5_minutes = played[:5]
+            recent5_average = (
+                sum(last5_minutes) / len(last5_minutes)
+                if last5_minutes else season_minutes
             )
+            base_projected = (
+                .45 * season_minutes
+                + .35 * recent_average
+                + .20 * recent5_average
+            )
+            base_projected += clamp(
+                recent5_average - recent_average, -3, 3
+            ) * .25
             absent, healthy_minutes, roster_count = boosts[team]
             share = season_minutes / healthy_minutes if healthy_minutes > 0 else 0
             extra_minutes = min(base_projected * .12, absent * share * .35)
@@ -563,7 +591,7 @@ def main():
                 )
 
                 df = defense_factor(
-                    defense_row, stat, opponent
+                    defense_row, stat, opponent, game_day
                 )
                 pf = pace_factor(team, opponent)
 

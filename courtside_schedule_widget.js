@@ -186,14 +186,45 @@
   root.innerHTML = "<h2>NBA Schedule & Matchup Stats</h2><p>Loading...</p>";
 
   try {
-    const [schedule, players, defense, logs, paceRows, injuries] =
+    const [schedule, players, defense, logs, paceRows, injuries, scored] =
       await Promise.all([
         load("nba_schedule.csv"), load("nba_stats.csv"),
         load("nba_opponent_defense.csv"), load("nba_game_logs.csv"),
         load("nba_team_pace.csv"),
-        load("nba_injuries.csv").catch(() => [])
+        load("nba_injuries.csv").catch(() => []),
+        load("nba_prediction_results.csv").catch(() => [])
       ]);
 
+    // Empirical errors are descriptive, not guaranteed future coverage.
+    const rangeErrors = {};
+    for (const stat of STATS) {
+      const errors = scored.map(r => {
+        const a = Number(r["actual_" + stat]);
+        const b = Number(r["pred_" + stat]);
+        return String(r["actual_" + stat] ?? "") !== "" &&
+          String(r["pred_" + stat] ?? "") !== "" &&
+          Number.isFinite(a) && Number.isFinite(b) ? Math.abs(a - b) : null;
+      }).filter(v => v !== null).sort((a,b) => a-b);
+      rangeErrors[stat] = errors.length >= 30
+        ? errors[Math.ceil(.8 * errors.length) - 1] : null;
+    }
+    function projectedMinutes(player, recent, absent, healthyMinutes) {
+      const season = n(player.minutes_pg);
+      const last10 = recent.slice(0,10).map(minutes).filter(x => x > 0);
+      const last5 = last10.slice(0,5);
+      const mean = xs => xs.length ? xs.reduce((a,b)=>a+b,0)/xs.length : season;
+      // A role proxy from minutes played; no unverified starter flags.
+      const base = .45 * season + .35 * mean(last10) + .20 * mean(last5);
+      const trend = clamp(mean(last5) - mean(last10), -3, 3) * .25;
+      const share = healthyMinutes > 0 ? season / healthyMinutes : 0;
+      const extra = Math.min(base * .12, absent * share * .35);
+      return clamp(base + trend + extra, 0, 48);
+    }
+    function rangeText(stat, prediction) {
+      const e = rangeErrors[stat];
+      if (e === null) return "—";
+      return `${Math.max(0, prediction-e).toFixed(1)}–${(prediction+e).toFixed(1)}`;
+    }
     const paceMap = new Map(paceRows.map(x => [norm(x.team), x]));
     const logsMap = new Map();
     for (const log of logs) {
@@ -249,11 +280,28 @@
         ? clamp(league / opp, .85, 1.15) : 1;
     }
 
-    function defenseFactor(d, stat, opponent) {
+    function defenseFactor(d, stat, opponent, gameDate) {
       if (!d) return 1;
       const b = baseline.get([d.position_type, d.position, stat].join("|"));
       if (!b || b.count <= 0 || b.total <= 0) return 1;
-      let raw = n(d[stat + "_allowed_pg"]) / (b.total / b.count);
+      const seasonAllowed = n(d[stat + "_allowed_pg"]);
+      // Recent player-game samples are filtered to BEFORE this matchup.
+      // Position-group fallback uses the same G/F/C grouping.
+      const samples = logs.filter(l =>
+        norm(l.opponent) === norm(opponent) &&
+        String(l.date ?? "").slice(0,10) < gameDate &&
+        (d.position_type === "position"
+          ? norm(l.position) === norm(d.position)
+          : group(l.position) === norm(d.position)) &&
+        minutes(l) > 0 && String(l[stat] ?? "").trim() !== ""
+      ).sort((a,b) => String(b.date).localeCompare(String(a.date))).slice(0,25);
+      const recentAllowed = samples.length
+        ? samples.reduce((sum,l)=>sum+n(l[stat]),0)/samples.length
+        : seasonAllowed;
+      const recentWeight = Math.min(.25, samples.length / 100);
+      const blendedAllowed = seasonAllowed * (1-recentWeight) +
+        recentAllowed * recentWeight;
+      let raw = blendedAllowed / (b.total / b.count);
       if (PACE_STATS.has(stat)) raw *= defensePace(opponent);
       const count = n(d.player_games);
       return clamp(
@@ -277,13 +325,13 @@
       ].includes(norm(injury.status)));
     }
 
-    function predict(player, recent, projected, stat, d, opponent, team, boost) {
+    function predict(player, recent, projected, stat, d, opponent, team, boost, gameDate) {
       const seasonMinutes = n(player.minutes_pg);
       const sr = seasonMinutes
         ? n(player[stat + "_pg"]) / seasonMinutes : 0;
       const l10 = perMinute(recent.slice(0, 10), stat, sr);
       const l5 = perMinute(recent.slice(0, 5), stat, sr);
-      const df = defenseFactor(d, stat, opponent);
+      const df = defenseFactor(d, stat, opponent, gameDate);
       const pf = paceFactor(team, opponent);
 
       if (stat === "three_pointers") {
@@ -370,26 +418,20 @@
             );
           }
 
-          const recentMinutes = recent.map(minutes).filter(x => x > 0);
           const seasonMinutes = n(player.minutes_pg);
-          const recentAvg = recentMinutes.length
-            ? recentMinutes.reduce((a, b) => a + b, 0) /
-              recentMinutes.length : seasonMinutes;
-          const baseProjected = clamp(
-            .75 * seasonMinutes + .25 * recentAvg, 0, 48
-          );
-          const share = healthyMinutes > 0 ? seasonMinutes / healthyMinutes : 0;
-          const extraMinutes = Math.min(baseProjected * .12, absent * share * .35);
-          const projected = clamp(baseProjected + extraMinutes, 0, 48);
+          const projected = projectedMinutes(player, recent, absent, healthyMinutes);
           // Smaller usage effect for high-minute players; minutes already adjust volume.
           const boost = absent > 0 && healthyMinutes > 0
             ? Math.min(.04, (absent / 240) * .10 *
                 (seasonMinutes / Math.max(1, healthyMinutes / Math.max(1, roster.length))))
             : 0;
 
-          const values = STATS.map(stat => out ? "—" :
+          const predictions = STATS.map(stat => out ? null :
             predict(player, recent, projected, stat,
-              d, opponent, team, boost).toFixed(1));
+              d, opponent, team, boost, localDateKey(game.date_utc)));
+          const values = predictions.map(v => v === null ? "—" : v.toFixed(1));
+          const ranges = predictions.map((v, i) => v === null ? "—" :
+            rangeText(STATS[i], v));
 
           rows.push(`<tr>
             <td>${esc(player.player_name)}</td>
@@ -398,7 +440,8 @@
             <td class="${injury ? "inj" : ""}">
               ${esc(injury?.status || "Not listed")}</td>
             <td>${d ? esc(d.player_games) : "—"}</td>
-            ${values.map(v => `<td>${v}</td>`).join("")}
+            <td>${out ? "—" : projected.toFixed(1)}</td>
+            ${values.map((v,i) => `<td>${v}<div class="muted" style="font-size:11px">${ranges[i] === "—" ? "" : "Range: " + ranges[i]}</div></td>`).join("")}
           </tr>`);
         }
       }
@@ -408,13 +451,15 @@
         ${esc(new Date(game.date_utc).toLocaleString())} ·
         ${esc(game.status_detail || game.status || "Scheduled")}</p>
         <p class="muted">OUT players have no estimates.
-        Predictions are pregame-style, not live box-score updates.</p>
+        Predictions are pregame-style, not live box-score updates.
+        Ranges use the 80th percentile of historical absolute errors when 30+ scored
+        games exist. They are illustrative and are not validated 80% coverage intervals.</p>
         <div class="scroll"><table><thead><tr>
           <th>Player</th><th>Team</th><th>Opponent</th>
-          <th>Pos</th><th>Injury</th><th>Defense sample</th>
+          <th>Pos</th><th>Injury</th><th>Defense sample</th><th>Est. MIN</th>
           ${LABELS.map(x => `<th>${x}</th>`).join("")}
         </tr></thead><tbody>${rows.join("") ||
-          '<tr><td colspan="12">No player stats found</td></tr>'}
+          '<tr><td colspan="13">No player stats found</td></tr>'}
         </tbody></table></div>
       `;
     }
