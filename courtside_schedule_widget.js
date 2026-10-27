@@ -345,7 +345,9 @@
         const absent = roster.reduce((sum, p) =>
           sum + (isOut(injuryFor(p)) ? n(p.minutes_pg) : 0), 0);
         const available = roster.some(p => !isOut(injuryFor(p)));
-        const boost = available ? Math.min(.08, absent / 240 * .22) : 0;
+        // Allocate missing minutes by each available player's established role.
+        const healthyMinutes = roster.reduce((sum, p) =>
+          sum + (!isOut(injuryFor(p)) ? n(p.minutes_pg) : 0), 0);
 
         for (const player of roster) {
           const injury = injuryFor(player);
@@ -373,9 +375,17 @@
           const recentAvg = recentMinutes.length
             ? recentMinutes.reduce((a, b) => a + b, 0) /
               recentMinutes.length : seasonMinutes;
-          const projected = clamp(
+          const baseProjected = clamp(
             .75 * seasonMinutes + .25 * recentAvg, 0, 48
           );
+          const share = healthyMinutes > 0 ? seasonMinutes / healthyMinutes : 0;
+          const extraMinutes = Math.min(baseProjected * .12, absent * share * .35);
+          const projected = clamp(baseProjected + extraMinutes, 0, 48);
+          // Smaller usage effect for high-minute players; minutes already adjust volume.
+          const boost = absent > 0 && healthyMinutes > 0
+            ? Math.min(.04, (absent / 240) * .10 *
+                (seasonMinutes / Math.max(1, healthyMinutes / Math.max(1, roster.length))))
+            : 0;
 
           const values = STATS.map(stat => out ? "—" :
             predict(player, recent, projected, stat,

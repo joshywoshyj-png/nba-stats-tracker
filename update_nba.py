@@ -41,6 +41,7 @@ STAT_COLUMNS = [
     "rebounds",
     "assists",
     "three_pointers",
+    "three_pointers_attempted",
     "steals",
     "blocks",
     "turnovers"
@@ -413,6 +414,9 @@ def get_game_stats(game):
                         values.get("AST", 0)
                     ),
                     "three_pointers": made_shots(
+                        three_point_value
+                    ),
+                    "three_pointers_attempted": attempted_shots(
                         three_point_value
                     ),
                     "steals": numeric(

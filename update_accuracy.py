@@ -447,10 +447,11 @@ def main():
                 not is_out(p) for p in roster
             )
 
-            boosts[team] = (
-                min(.08, absent / 240 * .22)
-                if available else 0.0
+            healthy_minutes = sum(
+                n(p.get("minutes_pg")) for p in roster
+                if not is_out(p)
             )
+            boosts[team] = (absent, healthy_minutes, len(roster))
 
         for player in players:
             team = norm(player.get("team"))
@@ -490,10 +491,19 @@ def main():
                 if played else season_minutes
             )
 
-            projected = clamp(
+            base_projected = clamp(
                 .75 * season_minutes
                 + .25 * recent_average,
                 0, 48
+            )
+            absent, healthy_minutes, roster_count = boosts[team]
+            share = season_minutes / healthy_minutes if healthy_minutes > 0 else 0
+            extra_minutes = min(base_projected * .12, absent * share * .35)
+            projected = clamp(base_projected + extra_minutes, 0, 48)
+            boost = (
+                min(.04, (absent / 240) * .10 *
+                    (season_minutes / max(1, healthy_minutes / max(1, roster_count))))
+                if absent > 0 and healthy_minutes > 0 else 0
             )
 
             position = next(
@@ -560,7 +570,7 @@ def main():
                 if stat == "three_pointers":
                     prediction = predict_three(
                         player, recent, projected,
-                        df, pf, boosts[team]
+                        df, pf, boost
                     )
                 else:
                     if stat == "points":
@@ -594,7 +604,7 @@ def main():
                     prediction = max(
                         0,
                         projected * weighted_rate
-                        * df * pf * (1 + boosts[team])
+                        * df * pf * (1 + boost)
                     )
 
                 record["pred_" + stat] = round(
