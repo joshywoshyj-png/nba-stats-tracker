@@ -1,31 +1,50 @@
-"""Courtside NBA prediction accuracy tracker.
+"""
+COURTSIDE — NBA PREDICTION ACCURACY TRACKER
 
-Freeze pregame estimates and compare them with actual ESPN logs.
-Points and rebounds use upgraded models.
-Existing prediction snapshots are preserved.
+Fixes:
+- Matches ESPN player logs across UTC/local date differences
+- Scores completed games with saved pregame predictions
+- Preserves existing prediction history
+- Prevents duplicate prediction snapshots
+- Uses upgraded points and rebounds formulas
+- Does not fabricate historical predictions
 """
 
 import csv
-import datetime as dt
 import math
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-UTC = dt.timezone.utc
-NOW = dt.datetime.now(UTC)
+UTC = timezone.utc
+CHICAGO = ZoneInfo("America/Chicago")
+NOW = datetime.now(UTC)
 
-STATS = (
-    "points", "rebounds", "assists",
-    "three_pointers", "steals", "blocks"
-)
+STATS = [
+    "points",
+    "rebounds",
+    "assists",
+    "three_pointers",
+    "steals",
+    "blocks",
+]
 
-HISTORY = Path("nba_prediction_history.csv")
-RESULTS = Path("nba_prediction_results.csv")
+HISTORY_FILE = Path("nba_prediction_history.csv")
+RESULTS_FILE = Path("nba_prediction_results.csv")
 
 HISTORY_FIELDS = [
-    "game_key", "game_date", "tipoff_utc", "saved_utc",
-    "player_id", "player_name", "team", "opponent",
-    "projected_minutes", "position", "baseline_games"
+    "game_key",
+    "game_date",
+    "tipoff_utc",
+    "saved_utc",
+    "player_id",
+    "player_name",
+    "team",
+    "opponent",
+    "projected_minutes",
+    "position",
+    "baseline_games",
 ] + [
     f"pred_{s}" for s in STATS
 ] + [
@@ -41,59 +60,115 @@ RESULT_FIELDS = HISTORY_FIELDS + [
 ]
 
 
-def read(filename):
-    with open(filename, newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+# ------------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------------
+
+def read_csv(path):
+    path = Path(path)
+
+    if not path.exists():
+        return []
+
+    with path.open(
+        "r",
+        newline="",
+        encoding="utf-8-sig",
+    ) as file:
+        return list(csv.DictReader(file))
 
 
-def write(filename, fields, rows):
-    with open(filename, "w", newline="", encoding="utf-8") as f:
+def write_csv(path, fields, rows):
+    # Preserve any additional columns in existing history.
+    columns = list(fields)
+
+    for row in rows:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+
+    with Path(path).open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as file:
         writer = csv.DictWriter(
-            f, fieldnames=fields, extrasaction="ignore"
+            file,
+            fieldnames=columns,
+            extrasaction="ignore",
         )
+
         writer.writeheader()
         writer.writerows(rows)
 
 
-def number(value):
+def num(value):
     try:
-        x = float(value)
-        return x if math.isfinite(x) else 0.0
-    except (ValueError, TypeError):
-        return 0.0
+        value = float(value)
+
+        if math.isfinite(value):
+            return value
+
+    except (TypeError, ValueError):
+        pass
+
+    return 0.0
 
 
-def clamp(x, minimum, maximum):
-    return max(minimum, min(maximum, x))
+def clamp(value, low, high):
+    return max(low, min(high, value))
 
 
 def norm(value):
     return str(value or "").strip().upper()
 
 
-def day(value):
-    s = str(value or "").strip()
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        return s[:10]
-    if len(s) >= 8 and s[:8].isdigit():
-        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
-    return ""
-
-
-def when(value):
+def parse_time(value):
     try:
-        d = dt.datetime.fromisoformat(
-            str(value).replace("Z", "+00:00")
+        value = str(value or "").strip()
+
+        if not value:
+            return None
+
+        parsed = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
         )
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=UTC)
-        return d.astimezone(UTC)
-    except (ValueError, TypeError):
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+
+        return parsed.astimezone(UTC)
+
+    except (TypeError, ValueError):
         return None
 
 
+def date_value(value):
+    value = str(value or "").strip()
+
+    try:
+        if len(value) >= 10 and value[4] == "-":
+            return datetime.strptime(
+                value[:10], "%Y-%m-%d"
+            ).date()
+
+        if len(value) >= 8 and value[:8].isdigit():
+            return datetime.strptime(
+                value[:8], "%Y%m%d"
+            ).date()
+
+    except ValueError:
+        pass
+
+    return None
+
+
+def game_local_date(tip):
+    return tip.astimezone(CHICAGO).date()
+
+
 def minutes(log):
-    return number(
+    return num(
         log.get("minutes")
         or log.get("minutes_played")
         or log.get("minutes_pg")
@@ -101,196 +176,253 @@ def minutes(log):
 
 
 def is_out(injury):
-    return str(injury.get("status", "")).strip().lower() in (
-        "out", "inactive", "injured reserve",
-        "suspended", "not with team"
-    )
+    return norm(injury.get("status")) in {
+        "OUT",
+        "INACTIVE",
+        "INJURED RESERVE",
+        "SUSPENDED",
+        "NOT WITH TEAM",
+    }
 
 
 def position_group(position):
-    p = norm(position)
-    if p in ("PG", "SG", "G"):
+    position = norm(position)
+
+    if position in {"PG", "SG", "G"}:
         return "G"
-    if p in ("SF", "PF", "F"):
+
+    if position in {"SF", "PF", "F"}:
         return "F"
-    if p == "C":
+
+    if position == "C":
         return "C"
+
     return ""
 
 
-def sample_rate(sample, stat, fallback):
+def sample_rate(logs, stat, fallback):
     valid = [
-        log for log in sample
+        log for log in logs
         if minutes(log) > 0
         and str(log.get(stat, "")).strip() != ""
     ]
+
     total_minutes = sum(minutes(log) for log in valid)
 
     if total_minutes <= 0:
         return fallback
 
     return (
-        sum(number(log.get(stat)) for log in valid)
+        sum(num(log.get(stat)) for log in valid)
         / total_minutes
     )
 
 
-def run():
-    players = read("nba_stats.csv")
-    logs = read("nba_game_logs.csv")
-    schedule = read("nba_schedule.csv")
-    defense = read("nba_opponent_defense.csv")
-    pace_rows = read("nba_team_pace.csv")
+def same_player_log(log, player_id):
+    return str(log.get("player_id", "")) == str(player_id)
 
-    injuries = (
-        read("nba_injuries.csv")
-        if Path("nba_injuries.csv").exists()
-        else []
-    )
 
-    history = read(HISTORY) if HISTORY.exists() else []
+# ------------------------------------------------------------
+# LOAD DATA
+# ------------------------------------------------------------
 
-    pace_by_team = {
-        norm(p.get("team")): p
-        for p in pace_rows
-    }
+def main():
+    players = read_csv("nba_stats.csv")
+    logs = read_csv("nba_game_logs.csv")
+    schedule = read_csv("nba_schedule.csv")
+    defense = read_csv("nba_opponent_defense.csv")
+    pace = read_csv("nba_team_pace.csv")
+    injuries = read_csv("nba_injuries.csv")
 
-    by_player = defaultdict(list)
+    history = read_csv(HISTORY_FILE)
+
+    print("COURTSIDE ACCURACY UPDATE")
+    print("-------------------------")
+    print("Players:", len(players))
+    print("Game logs:", len(logs))
+    print("Schedule games:", len(schedule))
+    print("Existing snapshots:", len(history))
+
+    logs_by_player = defaultdict(list)
 
     for log in logs:
-        by_player[str(log.get("player_id", ""))].append(log)
+        player_id = str(log.get("player_id", ""))
 
-    for entries in by_player.values():
-        entries.sort(
-            key=lambda log: day(log.get("date")),
-            reverse=True
+        if player_id:
+            logs_by_player[player_id].append(log)
+
+    for player_logs in logs_by_player.values():
+        player_logs.sort(
+            key=lambda log: (
+                date_value(log.get("date"))
+                or datetime.min.date()
+            ),
+            reverse=True,
         )
 
-    # Weighted league-average defensive statistics.
-    defense_averages = defaultdict(
+    pace_by_team = {
+        norm(row.get("team")): row
+        for row in pace
+    }
+
+    # --------------------------------------------------------
+    # DEFENSIVE LEAGUE BASELINES
+    # --------------------------------------------------------
+
+    defensive_baselines = defaultdict(
         lambda: [0.0, 0.0]
     )
 
-    for d in defense:
-        games = number(d.get("player_games"))
+    for row in defense:
+        games = num(row.get("player_games"))
+
         if games <= 0:
             continue
 
         for stat in STATS:
             key = (
-                d.get("position_type", ""),
-                d.get("position", ""),
-                stat
+                row.get("position_type", ""),
+                row.get("position", ""),
+                stat,
             )
-            defense_averages[key][0] += (
-                games * number(d.get(stat + "_allowed_pg"))
+
+            baseline = defensive_baselines[key]
+
+            baseline[0] += (
+                games * num(row.get(stat + "_allowed_pg"))
             )
-            defense_averages[key][1] += games
-
-    injury_ids = {
-        str(i.get("player_id"))
-        for i in injuries
-        if i.get("player_id") and is_out(i)
-    }
-
-    injury_names = {
-        (norm(i.get("player_name")), norm(i.get("team")))
-        for i in injuries
-        if is_out(i)
-    }
-
-    def player_is_out(player):
-        return (
-            str(player.get("player_id", "")) in injury_ids
-            or (
-                norm(player.get("player_name")),
-                norm(player.get("team"))
-            ) in injury_names
-        )
+            baseline[1] += games
 
     def pace_factor(team, opponent):
-        a = pace_by_team.get(norm(team))
-        b = pace_by_team.get(norm(opponent))
+        own = pace_by_team.get(norm(team))
+        other = pace_by_team.get(norm(opponent))
 
-        if not a or not b:
+        if not own or not other:
             return 1.0
 
-        own = number(a.get("adjusted_pace"))
-        other = number(b.get("adjusted_pace"))
+        own_pace = num(own.get("adjusted_pace"))
+        other_pace = num(other.get("adjusted_pace"))
 
-        if own <= 0 or other <= 0:
+        if own_pace <= 0 or other_pace <= 0:
             return 1.0
 
         return clamp(
-            ((own + other) / 2) / own,
-            0.90, 1.10
+            ((own_pace + other_pace) / 2) / own_pace,
+            0.90,
+            1.10,
         )
 
     def defense_pace_correction(opponent):
         row = pace_by_team.get(norm(opponent))
+
         if not row:
             return 1.0
 
-        league = number(row.get("league_average_pace"))
-        opponent_pace = number(row.get("adjusted_pace"))
+        league = num(row.get("league_average_pace"))
+        opponent_pace = num(row.get("adjusted_pace"))
 
         if league <= 0 or opponent_pace <= 0:
             return 1.0
 
         return clamp(
             league / opponent_pace,
-            0.85, 1.15
+            0.85,
+            1.15,
         )
 
-    def defense_factor(d, stat, opponent):
-        if not d:
+    def defense_factor(row, stat, opponent):
+        if not row:
             return 1.0
 
         key = (
-            d.get("position_type", ""),
-            d.get("position", ""),
-            stat
+            row.get("position_type", ""),
+            row.get("position", ""),
+            stat,
         )
 
-        total, appearances = defense_averages[key]
+        total, games = defensive_baselines[key]
 
-        if appearances <= 0:
+        if games <= 0:
             return 1.0
 
-        league_average = total / appearances
+        league_average = total / games
 
         if league_average <= 0:
             return 1.0
 
-        games = number(d.get("player_games"))
-
         raw = (
-            number(d.get(stat + "_allowed_pg"))
+            num(row.get(stat + "_allowed_pg"))
             / league_average
         )
 
         if stat in ("points", "rebounds"):
             raw *= defense_pace_correction(opponent)
 
+        sample = num(row.get("player_games"))
+
         return clamp(
-            1 + (games / (games + 20)) * 0.5 * (raw - 1),
-            0.85, 1.15
+            1 + (
+                sample / (sample + 20)
+            ) * 0.5 * (raw - 1),
+            0.85,
+            1.15,
         )
 
-    # Preserve snapshots that have already been saved.
+    # --------------------------------------------------------
+    # INJURIES
+    # --------------------------------------------------------
+
+    out_ids = set()
+    out_names = set()
+
+    for injury in injuries:
+        if not is_out(injury):
+            continue
+
+        if injury.get("player_id"):
+            out_ids.add(str(injury["player_id"]))
+
+        out_names.add((
+            norm(injury.get("player_name")),
+            norm(injury.get("team")),
+        ))
+
+    def player_is_out(player):
+        return (
+            str(player.get("player_id", "")) in out_ids
+            or (
+                norm(player.get("player_name")),
+                norm(player.get("team")),
+            ) in out_names
+        )
+
+    # --------------------------------------------------------
+    # EXISTING SNAPSHOTS
+    # --------------------------------------------------------
+
     existing = {
-        (r.get("game_key"), r.get("player_id"))
-        for r in history
+        (
+            row.get("game_key"),
+            str(row.get("player_id", "")),
+        )
+        for row in history
     }
 
-    new_count = 0
+    new_snapshots = 0
+
+    # --------------------------------------------------------
+    # CREATE NEW PRE-GAME PREDICTIONS
+    # --------------------------------------------------------
 
     for game in schedule:
-        tip = when(game.get("date_utc"))
+        tip = parse_time(game.get("date_utc"))
 
-        # Save estimates only before games begin.
-        if tip is None or not (
-            NOW < tip <= NOW + dt.timedelta(hours=48)
+        if tip is None:
+            continue
+
+        # Never generate a new prediction after tipoff.
+        if not (
+            NOW < tip <= NOW + timedelta(hours=48)
         ):
             continue
 
@@ -300,31 +432,38 @@ def run():
         if not home or not away:
             continue
 
-        game_date = tip.date().isoformat()
-        game_key = f"{tip.isoformat()}|{away}|{home}"
+        local_date = game_local_date(tip)
+        local_date_string = local_date.isoformat()
 
-        team_boost = {}
+        game_key = (
+            f"{tip.isoformat()}|{away}|{home}"
+        )
+
+        injury_boosts = {}
 
         for team in (home, away):
             roster = [
-                p for p in players
-                if norm(p.get("team")) == team
-                and number(p.get("games_played")) > 0
+                player for player in players
+                if norm(player.get("team")) == team
+                and num(player.get("games_played")) > 0
             ]
 
             absent_minutes = sum(
-                number(p.get("minutes_pg"))
-                for p in roster
-                if player_is_out(p)
+                num(player.get("minutes_pg"))
+                for player in roster
+                if player_is_out(player)
             )
 
             available = sum(
-                1 for p in roster
-                if not player_is_out(p)
+                1 for player in roster
+                if not player_is_out(player)
             )
 
-            team_boost[team] = (
-                min(0.08, absent_minutes / 240 * 0.22)
+            injury_boosts[team] = (
+                min(
+                    0.08,
+                    absent_minutes / 240 * 0.22,
+                )
                 if available else 0.0
             )
 
@@ -334,16 +473,23 @@ def run():
             if team not in (home, away):
                 continue
 
-            pid = str(player.get("player_id", ""))
+            player_id = str(
+                player.get("player_id", "")
+            )
 
-            if not pid or (game_key, pid) in existing:
+            if not player_id:
+                continue
+
+            key = (game_key, player_id)
+
+            if key in existing:
                 continue
 
             if player_is_out(player):
                 continue
 
-            games = number(player.get("games_played"))
-            season_minutes = number(
+            games = num(player.get("games_played"))
+            season_minutes = num(
                 player.get("minutes_pg")
             )
 
@@ -353,13 +499,14 @@ def run():
             opponent = away if team == home else home
 
             recent = [
-                log for log in by_player[pid]
-                if day(log.get("date"))
-                and day(log.get("date")) < game_date
+                log for log in logs_by_player[player_id]
+                if date_value(log.get("date"))
+                and date_value(log.get("date")) < local_date
             ][:10]
 
             recent_minutes = [
-                minutes(log) for log in recent
+                minutes(log)
+                for log in recent
                 if minutes(log) > 0
             ]
 
@@ -370,9 +517,10 @@ def run():
             )
 
             projected_minutes = clamp(
-                0.75 * season_minutes +
-                0.25 * recent_average,
-                0, 48
+                0.75 * season_minutes
+                + 0.25 * recent_average,
+                0,
+                48,
             )
 
             position = next(
@@ -381,91 +529,106 @@ def run():
                     for log in recent
                     if log.get("position")
                 ),
-                ""
+                "",
             )
 
-            d = next(
+            defense_row = next(
                 (
                     row for row in defense
                     if norm(row.get("opponent")) == opponent
-                    and row.get("position") == position
-                    and row.get("position_type") == "position"
+                    and norm(row.get("position"))
+                    == norm(position)
+                    and row.get("position_type")
+                    == "position"
                 ),
-                None
+                None,
             )
 
-            if d is None:
-                pos_group = position_group(position)
+            if defense_row is None:
+                grouped = position_group(position)
 
-                d = next(
+                defense_row = next(
                     (
                         row for row in defense
-                        if norm(row.get("opponent")) == opponent
-                        and row.get("position") == pos_group
+                        if norm(row.get("opponent"))
+                        == opponent
+                        and norm(row.get("position"))
+                        == grouped
                         and row.get("position_type")
                         == "position_group"
                     ),
-                    None
+                    None,
                 )
 
             record = {
                 "game_key": game_key,
-                "game_date": game_date,
+                "game_date": local_date_string,
                 "tipoff_utc": tip.isoformat(),
                 "saved_utc": NOW.isoformat(),
-                "player_id": pid,
-                "player_name": player.get("player_name", ""),
+                "player_id": player_id,
+                "player_name": player.get(
+                    "player_name", ""
+                ),
                 "team": team,
                 "opponent": opponent,
                 "projected_minutes": round(
                     projected_minutes, 2
                 ),
                 "position": position,
-                "baseline_games": games
+                "baseline_games": games,
             }
 
             for stat in STATS:
-                baseline = number(
+                baseline = num(
                     player.get(stat + "_pg")
                 )
-                season_rate = baseline / season_minutes
+
+                season_rate = (
+                    baseline / season_minutes
+                )
 
                 last10 = sample_rate(
-                    recent[:10], stat, season_rate
+                    recent[:10],
+                    stat,
+                    season_rate,
                 )
+
                 last5 = sample_rate(
-                    recent[:5], stat, season_rate
+                    recent[:5],
+                    stat,
+                    season_rate,
                 )
 
                 if stat == "points":
-                    # Upgraded points model.
                     rate = (
-                        0.55 * season_rate +
-                        0.30 * last10 +
-                        0.15 * last5
+                        0.55 * season_rate
+                        + 0.30 * last10
+                        + 0.15 * last5
                     )
 
                 elif stat == "rebounds":
-                    # NEW: Upgraded rebounds model.
                     rate = (
-                        0.50 * season_rate +
-                        0.30 * last10 +
-                        0.20 * last5
+                        0.50 * season_rate
+                        + 0.30 * last10
+                        + 0.20 * last5
                     )
 
                 else:
-                    # Existing models for other statistics.
                     valid = [
                         log for log in recent
                         if minutes(log) > 0
-                        and str(log.get(stat, "")).strip()
+                        and str(
+                            log.get(stat, "")
+                        ).strip() != ""
                     ]
 
-                    weight = games / (games + 12)
+                    season_weight = (
+                        games / (games + 12)
+                    )
 
                     stabilized = (
-                        weight * season_rate +
-                        (1 - weight) * last10
+                        season_weight * season_rate
+                        + (1 - season_weight) * last10
                     )
 
                     recent_weight = (
@@ -473,13 +636,9 @@ def run():
                     )
 
                     rate = (
-                        (1 - recent_weight) * stabilized +
-                        recent_weight * last10
+                        (1 - recent_weight) * stabilized
+                        + recent_weight * last10
                     )
-
-                adjustment = defense_factor(
-                    d, stat, opponent
-                )
 
                 matchup_pace = (
                     pace_factor(team, opponent)
@@ -489,11 +648,15 @@ def run():
 
                 prediction = max(
                     0,
-                    projected_minutes *
-                    rate *
-                    adjustment *
-                    matchup_pace *
-                    (1 + team_boost[team])
+                    projected_minutes
+                    * rate
+                    * defense_factor(
+                        defense_row,
+                        stat,
+                        opponent,
+                    )
+                    * matchup_pace
+                    * (1 + injury_boosts[team]),
                 )
 
                 record["pred_" + stat] = round(
@@ -505,76 +668,212 @@ def run():
                 )
 
             history.append(record)
-            existing.add((game_key, pid))
-            new_count += 1
+            existing.add(key)
+            new_snapshots += 1
 
-    write(HISTORY, HISTORY_FIELDS, history)
+    write_csv(
+        HISTORY_FILE,
+        HISTORY_FIELDS,
+        history,
+    )
 
-    # Score snapshots using completed game logs.
-    # Do not count missing logs or DNPs as zero.
+    # --------------------------------------------------------
+    # MATCH FINISHED GAMES TO ESPN PLAYER LOGS
+    # --------------------------------------------------------
+
     results = []
 
+    matched = 0
+    no_log = 0
+    incomplete = 0
+    not_finished = 0
+    invalid_snapshot = 0
+
     for record in history:
-        tip = when(record.get("tipoff_utc"))
+        tip = parse_time(
+            record.get("tipoff_utc")
+        )
 
-        if tip is None or NOW < tip + dt.timedelta(hours=2):
+        if tip is None:
             continue
 
-        candidates = [
-            log for log in by_player.get(
-                str(record.get("player_id")), []
+        saved = parse_time(
+            record.get("saved_utc")
+        )
+
+        # Never score a snapshot saved after tipoff.
+        if saved is not None and saved >= tip:
+            invalid_snapshot += 1
+            continue
+
+        # Allow time for games and ESPN logs to finish.
+        if NOW < tip + timedelta(hours=2):
+            not_finished += 1
+            continue
+
+        player_id = str(
+            record.get("player_id", "")
+        )
+
+        opponent = norm(
+            record.get("opponent")
+        )
+
+        # Use the actual local date of tipoff, not the
+        # UTC date written in old prediction history.
+        local_date = game_local_date(tip)
+
+        # ESPN dates sometimes differ by one day from
+        # the UTC date of an evening NBA game.
+        acceptable_dates = {
+            local_date - timedelta(days=1),
+            local_date,
+            local_date + timedelta(days=1),
+        }
+
+        candidates = []
+
+        for log in logs_by_player.get(player_id, []):
+            log_date = date_value(
+                log.get("date")
             )
-            if day(log.get("date")) == record["game_date"]
-            and norm(log.get("opponent"))
-            == norm(record["opponent"])
-            and minutes(log) > 0
-        ]
 
-        if len(candidates) != 1:
+            if log_date not in acceptable_dates:
+                continue
+
+            if norm(log.get("opponent")) != opponent:
+                continue
+
+            if minutes(log) <= 0:
+                continue
+
+            candidates.append(log)
+
+        if not candidates:
+            no_log += 1
             continue
+
+        # Prefer the log whose date matches the
+        # local calendar date of the game.
+        candidates.sort(
+            key=lambda log: abs(
+                (
+                    date_value(log.get("date"))
+                    - local_date
+                ).days
+            )
+        )
+
+        # Avoid accidentally matching an ambiguous
+        # player/opponent/date combination.
+        if len(candidates) > 1:
+            first_distance = abs(
+                (
+                    date_value(candidates[0].get("date"))
+                    - local_date
+                ).days
+            )
+
+            second_distance = abs(
+                (
+                    date_value(candidates[1].get("date"))
+                    - local_date
+                ).days
+            )
+
+            if first_distance == second_distance:
+                no_log += 1
+                continue
 
         actual = candidates[0]
 
-        result = dict(
-            record,
-            actual_minutes=round(minutes(actual), 2)
-        )
+        # Do not score partially populated box scores.
+        if any(
+            str(actual.get(stat, "")).strip() == ""
+            for stat in STATS
+        ):
+            incomplete += 1
+            continue
 
-        complete = True
+        result = dict(record)
+
+        result["actual_minutes"] = round(
+            minutes(actual), 2
+        )
 
         for stat in STATS:
-            if str(actual.get(stat, "")).strip() == "":
-                complete = False
-                break
-
-            value = number(actual.get(stat))
-
-            result["actual_" + stat] = value
-            result["error_" + stat] = round(
-                abs(
-                    number(record.get("pred_" + stat))
-                    - value
-                ),
-                3
+            actual_value = num(
+                actual.get(stat)
             )
 
-        if complete:
-            results.append(result)
+            predicted_value = num(
+                record.get("pred_" + stat)
+            )
 
-    write(RESULTS, RESULT_FIELDS, results)
+            result["actual_" + stat] = actual_value
 
-    print(
-        f"Prediction snapshots: {len(history)} total, "
-        f"{new_count} newly saved; "
-        f"scored results: {len(results)}"
+            result["error_" + stat] = round(
+                abs(
+                    predicted_value - actual_value
+                ),
+                3,
+            )
+
+        results.append(result)
+        matched += 1
+
+    write_csv(
+        RESULTS_FILE,
+        RESULT_FIELDS,
+        results,
     )
 
-    if new_count == 0:
+    # --------------------------------------------------------
+    # REPORT
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 55)
+    print("COURTSIDE ACCURACY RESULTS")
+    print("=" * 55)
+
+    print("Total saved predictions:", len(history))
+    print("New pregame predictions:", new_snapshots)
+    print("Completed results matched:", matched)
+    print("Waiting for completed logs:", no_log)
+    print("Incomplete box scores:", incomplete)
+    print("Games not ready:", not_finished)
+    print("Invalid late snapshots:", invalid_snapshot)
+
+    if results:
+        print()
+        print("MEAN ABSOLUTE ERROR")
+
+        for stat in STATS:
+            errors = [
+                num(row.get("error_" + stat))
+                for row in results
+            ]
+
+            mae = sum(errors) / len(errors)
+
+            print(
+                f"{stat}: {mae:.2f}"
+            )
+
+    else:
+        print()
         print(
-            "No new eligible pregame games. "
-            "Existing prediction history preserved."
+            "No eligible completed results yet. "
+            "Check whether pregame snapshots exist "
+            "and whether nba_game_logs.csv has "
+            "the completed player statistics."
         )
+
+    print()
+    print("History file:", HISTORY_FILE)
+    print("Results file:", RESULTS_FILE)
 
 
 if __name__ == "__main__":
-    run()
+    main()
