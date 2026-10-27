@@ -1,15 +1,7 @@
-/* ============================================================
-   COURTSIDE — NBA SCHEDULE & MATCHUP PREDICTOR
-   Current-season stats, opponent defense, pace, injuries
-
-   Shows:
-   - All games scheduled for today, including live games
-   - All future scheduled games
-   - Player estimates for PTS, REB, AST, 3PM, STL, BLK
-
-   Today's games remain visible until local midnight.
-   ============================================================ */
-
+/* COURTSIDE — NBA Matchup Predictor
+   Points + rebounds upgraded.
+   Keeps today's games, including games already started.
+*/
 (async function () {
   "use strict";
 
@@ -17,876 +9,496 @@
     "https://raw.githubusercontent.com/joshywoshyj-png/nba-stats-tracker/main/";
 
   const STATS = [
-    "points",
-    "rebounds",
-    "assists",
-    "three_pointers",
-    "steals",
-    "blocks"
+    "points", "rebounds", "assists",
+    "three_pointers", "steals", "blocks"
   ];
-
   const LABELS = ["PTS", "REB", "AST", "3PM", "STL", "BLK"];
 
-  const number = value => {
-    const result = Number(value);
-    return Number.isFinite(result) ? result : 0;
+  const n = x => {
+    const v = Number(x);
+    return Number.isFinite(v) ? v : 0;
   };
-
-  const clamp = (value, minimum, maximum) =>
-    Math.max(minimum, Math.min(maximum, value));
-
-  const escapeHTML = value =>
-    String(value ?? "").replace(
-      /[&<>"']/g,
-      character => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-      })[character]
-    );
-
-  const normalizeName = value =>
-    String(value || "")
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z]/g, "");
-
-  const positionGroup = position => {
-    const p = String(position || "").toUpperCase();
-
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const norm = x => String(x || "").trim().toUpperCase();
+  const normName = x => String(x || "").toLowerCase()
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z]/g, "");
+  const esc = x => String(x ?? "").replace(
+    /[&<>"']/g,
+    c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;",
+      '"': "&quot;", "'": "&#39;"
+    })[c]
+  );
+  const group = p => {
+    p = norm(p);
     if (["PG", "SG", "G"].includes(p)) return "G";
     if (["SF", "PF", "F"].includes(p)) return "F";
     if (p === "C") return "C";
-    if (["G-F", "F-G", "GF"].includes(p)) return "G-F";
-    if (["F-C", "C-F", "FC"].includes(p)) return "F-C";
-
     return "";
   };
 
-  // ----------------------------------------------------------
-  // CSV PARSER
-  // ----------------------------------------------------------
-
-  function parseCSV(text) {
+  function csv(text) {
     const rows = [];
-    let row = [];
-    let value = "";
-    let quoted = false;
+    let row = [], cell = "", quoted = false;
 
     for (let i = 0; i < text.length; i++) {
-      const character = text[i];
-
-      if (character === '"') {
+      const c = text[i];
+      if (c === '"') {
         if (quoted && text[i + 1] === '"') {
-          value += '"';
+          cell += '"';
           i++;
         } else {
           quoted = !quoted;
         }
-      } else if (character === "," && !quoted) {
-        row.push(value);
-        value = "";
-      } else if (
-        (character === "\n" || character === "\r") &&
-        !quoted
-      ) {
-        if (character === "\r" && text[i + 1] === "\n") {
-          i++;
-        }
-
-        row.push(value);
-
-        if (row.some(item => item !== "")) {
-          rows.push(row);
-        }
-
+      } else if (c === "," && !quoted) {
+        row.push(cell);
+        cell = "";
+      } else if ((c === "\n" || c === "\r") && !quoted) {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(cell);
+        if (row.some(x => x !== "")) rows.push(row);
         row = [];
-        value = "";
+        cell = "";
       } else {
-        value += character;
+        cell += c;
       }
     }
-
-    if (row.length || value) {
-      row.push(value);
+    if (cell || row.length) {
+      row.push(cell);
       rows.push(row);
     }
 
     const headers = rows.shift() || [];
-
-    return rows.map(values =>
-      Object.fromEntries(
-        headers.map((header, index) => [
-          header,
-          values[index] ?? ""
-        ])
-      )
-    );
+    return rows.map(r => Object.fromEntries(
+      headers.map((h, i) => [h, r[i] ?? ""])
+    ));
   }
 
-  async function loadCSV(filename) {
+  async function load(name) {
     const response = await fetch(
-      BASE + filename + "?v=" + Date.now(),
+      BASE + name + "?t=" + Date.now(),
       { cache: "no-store" }
     );
-
     if (!response.ok) {
-      throw new Error(
-        filename + " could not load (HTTP " +
-        response.status + ")"
-      );
+      throw Error(name + " HTTP " + response.status);
     }
-
-    return parseCSV(await response.text());
+    return csv(await response.text());
   }
 
-  // ----------------------------------------------------------
-  // STYLING
-  // ----------------------------------------------------------
-
   const style = document.createElement("style");
-
   style.textContent = `
     #cs-schedule {
-      font: 14px system-ui, sans-serif;
-      background: #14171f;
-      color: #f5f6fa;
-      border: 1px solid #353944;
-      border-radius: 18px;
-      padding: 22px;
-      margin: 24px auto;
-      max-width: 1200px;
+      font:14px system-ui,sans-serif;
+      background:#14171f;color:#f5f6fa;
+      border:1px solid #353944;border-radius:18px;
+      padding:22px;margin:24px auto;max-width:1200px
     }
-
-    #cs-schedule h2 {
-      margin: 0 0 8px;
-      font-size: 25px;
-    }
-
+    #cs-schedule h2 {margin:0 0 8px;font-size:25px}
     #cs-schedule select {
-      background: #202530;
-      color: white;
-      border: 1px solid #555;
-      border-radius: 8px;
-      padding: 10px;
-      width: 100%;
-      max-width: 100%;
-      margin: 12px 0;
+      background:#202530;color:white;
+      border:1px solid #555;border-radius:8px;
+      padding:10px;width:100%;margin:12px 0
     }
-
     #cs-schedule table {
-      border-collapse: collapse;
-      width: 100%;
-      min-width: 1000px;
+      border-collapse:collapse;width:100%;min-width:1000px
     }
-
-    #cs-schedule td,
-    #cs-schedule th {
-      text-align: left;
-      border-bottom: 1px solid #343844;
-      padding: 10px;
+    #cs-schedule td,#cs-schedule th {
+      text-align:left;border-bottom:1px solid #343844;
+      padding:10px
     }
-
-    #cs-schedule th {
-      color: #d5d7df;
-    }
-
-    #cs-schedule .scroll {
-      overflow-x: auto;
-    }
-
-    #cs-schedule .muted {
-      color: #b3b9c6;
-      line-height: 1.5;
-    }
-
-    #cs-schedule .inj {
-      color: #ffb0b0;
-    }
-
-    #cs-schedule .error {
-      color: #ff6868;
-    }
-
-    #cs-schedule .game-label {
-      display: block;
-      font-weight: 600;
-      margin-top: 14px;
-    }
+    #cs-schedule th {color:#d5d7df}
+    #cs-schedule .scroll {overflow-x:auto}
+    #cs-schedule .muted {color:#b3b9c6;line-height:1.5}
+    #cs-schedule .inj {color:#ffb0b0}
+    #cs-schedule .error {color:#ff6868}
   `;
-
   document.head.appendChild(style);
 
-  // ----------------------------------------------------------
-  // CREATE WIDGET
-  // ----------------------------------------------------------
-
   let root = document.getElementById("cs-schedule");
-
   if (!root) {
     root = document.createElement("section");
     root.id = "cs-schedule";
-
     (document.querySelector("main") || document.body)
       .appendChild(root);
   }
 
   root.innerHTML = `
     <h2>NBA Schedule & Matchup Stats</h2>
-    <p class="muted">
-      Loading games, player stats, pace, and injuries...
-    </p>
+    <p class="muted">Loading games and player statistics...</p>
   `;
 
   try {
-    // --------------------------------------------------------
-    // LOAD DATA
-    // --------------------------------------------------------
-
     const [
-      schedule,
-      players,
-      defense,
-      logs,
-      paceRows,
-      injuriesResult
+      schedule, players, defense, logs,
+      paceRows, injuryRows
     ] = await Promise.all([
-      loadCSV("nba_schedule.csv"),
-      loadCSV("nba_stats.csv"),
-      loadCSV("nba_opponent_defense.csv"),
-      loadCSV("nba_game_logs.csv"),
-      loadCSV("nba_team_pace.csv"),
-      loadCSV("nba_injuries.csv")
-        .then(rows => ({ ok: true, rows }))
-        .catch(() => ({ ok: false, rows: [] }))
+      load("nba_schedule.csv"),
+      load("nba_stats.csv"),
+      load("nba_opponent_defense.csv"),
+      load("nba_game_logs.csv"),
+      load("nba_team_pace.csv"),
+      load("nba_injuries.csv").catch(() => [])
     ]);
 
-    const injuries = injuriesResult.rows;
-
     const paceByTeam = new Map(
-      paceRows.map(row => [row.team, row])
+      paceRows.map(p => [norm(p.team), p])
     );
 
-    // --------------------------------------------------------
-    // FIXED SCHEDULE FILTER
-    //
-    // Compare local calendar dates rather than hours
-    // since tipoff. This keeps all of today's games,
-    // including live games and games already completed.
-    // --------------------------------------------------------
-
-    function localDateKey(value) {
-      const date = new Date(value);
-
-      if (!Number.isFinite(date.getTime())) {
-        return "";
-      }
-
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1)
-        .padStart(2, "0");
-      const day = String(date.getDate())
-        .padStart(2, "0");
-
-      return `${year}-${month}-${day}`;
+    const logsByPlayer = new Map();
+    for (const log of logs) {
+      const id = String(log.player_id || "");
+      if (!logsByPlayer.has(id)) logsByPlayer.set(id, []);
+      logsByPlayer.get(id).push(log);
+    }
+    for (const entries of logsByPlayer.values()) {
+      entries.sort((a, b) =>
+        String(b.date).localeCompare(String(a.date))
+      );
     }
 
-    const todayKey = localDateKey(new Date());
+    function localDateKey(value) {
+      const d = new Date(value);
+      if (!Number.isFinite(d.getTime())) return "";
+      return [
+        d.getFullYear(),
+        String(d.getMonth() + 1).padStart(2, "0"),
+        String(d.getDate()).padStart(2, "0")
+      ].join("-");
+    }
 
-    const upcoming = schedule
-      .filter(game => {
-        const gameKey = localDateKey(game.date_utc);
-
-        return gameKey !== "" && gameKey >= todayKey;
-      })
-      .sort(
-        (a, b) =>
-          new Date(a.date_utc).getTime() -
-          new Date(b.date_utc).getTime()
-      );
+    // Keep all of today's games, even after tipoff.
+    const today = localDateKey(new Date());
+    const upcoming = schedule.filter(g => {
+      const date = localDateKey(g.date_utc);
+      return date && date >= today;
+    }).sort((a, b) =>
+      new Date(a.date_utc) - new Date(b.date_utc)
+    );
 
     if (!upcoming.length) {
       root.innerHTML = `
         <h2>NBA Schedule & Matchup Stats</h2>
         <p class="muted">
-          No games scheduled for today or later were found.
-          Check nba_schedule.csv and run your GitHub updater.
+          No games found for today or later.
+          Check nba_schedule.csv.
         </p>
       `;
       return;
     }
 
-    // --------------------------------------------------------
-    // PACE ADJUSTMENT
-    // --------------------------------------------------------
+    const baselines = new Map();
+    for (const d of defense) {
+      const games = n(d.player_games);
+      if (games <= 0) continue;
+      for (const stat of STATS) {
+        const key = [
+          d.position_type, d.position, stat
+        ].join("|");
+        if (!baselines.has(key)) {
+          baselines.set(key, { total: 0, games: 0 });
+        }
+        const b = baselines.get(key);
+        b.total += n(d[stat + "_allowed_pg"]) * games;
+        b.games += games;
+      }
+    }
 
     function paceFactor(team, opponent) {
-      const own = paceByTeam.get(team);
-      const other = paceByTeam.get(opponent);
-
-      if (!own || !other) return 1;
-
-      const ownPace = number(own.adjusted_pace);
-      const opponentPace = number(other.adjusted_pace);
-
-      if (ownPace <= 0 || opponentPace <= 0) {
-        return 1;
-      }
-
-      const expectedPace =
-        (ownPace + opponentPace) / 2;
-
-      return clamp(
-        expectedPace / ownPace,
-        0.90,
-        1.10
-      );
+      const a = paceByTeam.get(norm(team));
+      const b = paceByTeam.get(norm(opponent));
+      if (!a || !b) return 1;
+      const own = n(a.adjusted_pace);
+      const other = n(b.adjusted_pace);
+      if (own <= 0 || other <= 0) return 1;
+      return clamp(((own + other) / 2) / own, .90, 1.10);
     }
 
     function defensePaceCorrection(opponent) {
-      const row = paceByTeam.get(opponent);
-
-      if (!row) return 1;
-
-      const leaguePace = number(
-        row.league_average_pace
-      );
-
-      const opponentPace = number(
-        row.adjusted_pace
-      );
-
-      if (leaguePace <= 0 || opponentPace <= 0) {
-        return 1;
-      }
-
-      return clamp(
-        leaguePace / opponentPace,
-        0.85,
-        1.15
-      );
+      const p = paceByTeam.get(norm(opponent));
+      if (!p) return 1;
+      const league = n(p.league_average_pace);
+      const opponentPace = n(p.adjusted_pace);
+      if (league <= 0 || opponentPace <= 0) return 1;
+      return clamp(league / opponentPace, .85, 1.15);
     }
 
-    // --------------------------------------------------------
-    // DEFENSIVE POSITION AVERAGES
-    // --------------------------------------------------------
+    function defenseFactor(d, stat, opponent) {
+      if (!d) return 1;
+      const key = [
+        d.position_type, d.position, stat
+      ].join("|");
+      const b = baselines.get(key);
+      if (!b || b.games <= 0) return 1;
 
-    const defenseBaselines = {};
+      const average = b.total / b.games;
+      if (average <= 0) return 1;
 
-    for (const row of defense) {
-      const games = number(row.player_games);
+      const games = n(d.player_games);
+      let raw = n(d[stat + "_allowed_pg"]) / average;
 
-      if (games <= 0) continue;
-
-      const key =
-        row.position_type + "|" + row.position;
-
-      if (!defenseBaselines[key]) {
-        defenseBaselines[key] = {
-          games: 0,
-          totals: {}
-        };
-      }
-
-      const baseline = defenseBaselines[key];
-
-      baseline.games += games;
-
-      for (const stat of STATS) {
-        baseline.totals[stat] =
-          (baseline.totals[stat] || 0) +
-          number(row[stat + "_allowed_pg"]) * games;
-      }
-    }
-
-    function defenseFactor(row, stat, opponent) {
-      if (!row) return 1;
-
-      const key =
-        row.position_type + "|" + row.position;
-
-      const baseline = defenseBaselines[key];
-
-      if (!baseline || baseline.games <= 0) {
-        return 1;
-      }
-
-      const leagueAverage =
-        baseline.totals[stat] / baseline.games;
-
-      if (leagueAverage <= 0) return 1;
-
-      const games = number(row.player_games);
-
-      let raw =
-        number(row[stat + "_allowed_pg"]) /
-        leagueAverage;
-
-      if (stat === "points") {
+      if (stat === "points" || stat === "rebounds") {
         raw *= defensePaceCorrection(opponent);
       }
 
       return clamp(
-        1 +
-          (games / (games + 20)) *
-          0.5 *
-          (raw - 1),
-        0.85,
-        1.15
+        1 + (games / (games + 20)) * .5 * (raw - 1),
+        .85, 1.15
       );
     }
 
-    // --------------------------------------------------------
-    // PLAYER GAME LOGS
-    // --------------------------------------------------------
-
-    const playerLogs = new Map();
-
-    for (const log of logs) {
-      const id = String(log.player_id || "");
-
-      if (!playerLogs.has(id)) {
-        playerLogs.set(id, []);
-      }
-
-      playerLogs.get(id).push(log);
-    }
-
-    for (const entries of playerLogs.values()) {
-      entries.sort(
-        (a, b) =>
-          String(b.date).localeCompare(String(a.date))
-      );
-    }
-
-    function logMinutes(log) {
-      return number(
+    function minutes(log) {
+      return n(
         log.minutes ||
         log.minutes_played ||
         log.minutes_pg
       );
     }
 
-    // --------------------------------------------------------
-    // INJURIES
-    // --------------------------------------------------------
+    function sampleRate(sample, stat, fallback) {
+      const valid = sample.filter(l =>
+        minutes(l) > 0 &&
+        String(l[stat] ?? "").trim() !== ""
+      );
+      const totalMinutes = valid.reduce(
+        (s, l) => s + minutes(l), 0
+      );
+      if (!totalMinutes) return fallback;
+      return valid.reduce(
+        (s, l) => s + n(l[stat]), 0
+      ) / totalMinutes;
+    }
 
     function injuryFor(player) {
-      return injuries.find(
-        injury =>
-          (
-            injury.player_id &&
-            player.player_id &&
-            String(injury.player_id) ===
-              String(player.player_id)
-          ) ||
-          (
-            injury.team === player.team &&
-            normalizeName(injury.player_name) ===
-              normalizeName(player.player_name)
-          )
+      return injuryRows.find(i =>
+        (
+          i.player_id && player.player_id &&
+          String(i.player_id) === String(player.player_id)
+        ) || (
+          norm(i.team) === norm(player.team) &&
+          normName(i.player_name) ===
+            normName(player.player_name)
+        )
       );
     }
 
     function isOut(injury) {
-      return Boolean(
-        injury &&
-        /^(out|inactive|injured reserve|suspended|not with team)$/i
-          .test(String(injury.status || "").trim())
-      );
+      return Boolean(injury && [
+        "out", "inactive", "injured reserve",
+        "suspended", "not with team"
+      ].includes(String(injury.status || "")
+        .trim().toLowerCase()));
     }
 
-    // --------------------------------------------------------
-    // POINTS FORMULA
-    // --------------------------------------------------------
+    function predict(player, recent, projectedMinutes,
+                     stat, defenseRow, opponent,
+                     team, injuryBoost) {
+      const seasonMinutes = n(player.minutes_pg);
+      const seasonRate = seasonMinutes > 0
+        ? n(player[stat + "_pg"]) / seasonMinutes
+        : 0;
 
-    function pointsRate(player, recent) {
-      const seasonMinutes = number(
-        player.minutes_pg
+      const last10 = sampleRate(
+        recent.slice(0, 10), stat, seasonRate
+      );
+      const last5 = sampleRate(
+        recent.slice(0, 5), stat, seasonRate
       );
 
-      const seasonRate =
-        seasonMinutes > 0
-          ? number(player.points_pg) / seasonMinutes
-          : 0;
+      let rate;
 
-      function sampleRate(sample) {
-        const valid = sample.filter(
-          log =>
-            logMinutes(log) > 0 &&
-            String(log.points ?? "").trim() !== ""
+      if (stat === "points") {
+        rate = .55 * seasonRate +
+               .30 * last10 +
+               .15 * last5;
+      } else if (stat === "rebounds") {
+        rate = .50 * seasonRate +
+               .30 * last10 +
+               .20 * last5;
+      } else {
+        const valid = recent.filter(l =>
+          minutes(l) > 0 &&
+          String(l[stat] ?? "").trim() !== ""
         );
-
-        const totalMinutes = valid.reduce(
-          (sum, log) => sum + logMinutes(log),
-          0
-        );
-
-        if (totalMinutes <= 0) {
-          return seasonRate;
-        }
-
-        const totalPoints = valid.reduce(
-          (sum, log) => sum + number(log.points),
-          0
-        );
-
-        return totalPoints / totalMinutes;
+        const games = n(player.games_played);
+        const weight = games / (games + 12);
+        const stabilized =
+          weight * seasonRate +
+          (1 - weight) * last10;
+        const recentWeight =
+          valid.length / (valid.length + 10);
+        rate = (1 - recentWeight) * stabilized +
+               recentWeight * last10;
       }
 
-      return (
-        0.55 * seasonRate +
-        0.30 * sampleRate(recent.slice(0, 10)) +
-        0.15 * sampleRate(recent.slice(0, 5))
+      const defenseAdjustment =
+        defenseFactor(defenseRow, stat, opponent);
+
+      const matchupPace =
+        stat === "points" || stat === "rebounds"
+          ? paceFactor(team, opponent)
+          : 1;
+
+      return Math.max(
+        0,
+        projectedMinutes *
+        rate *
+        defenseAdjustment *
+        matchupPace *
+        (1 + injuryBoost)
       );
     }
-
-    // --------------------------------------------------------
-    // EXISTING FORMULA FOR OTHER STATS
-    // --------------------------------------------------------
-
-    function blendedRate(
-      seasonRate,
-      recentRate,
-      seasonGames,
-      recentGames
-    ) {
-      const priorGames = 12;
-
-      const weight =
-        seasonGames / (seasonGames + priorGames);
-
-      const stabilized =
-        weight * seasonRate +
-        (1 - weight) * recentRate;
-
-      const recentWeight =
-        recentGames / (recentGames + 10);
-
-      return (
-        (1 - recentWeight) * stabilized +
-        recentWeight * recentRate
-      );
-    }
-
-    // --------------------------------------------------------
-    // BUILD MATCHUP SELECTOR
-    // --------------------------------------------------------
 
     root.innerHTML = `
       <h2>NBA Schedule & Matchup Stats</h2>
-
       <p class="muted">
-        ESPN schedule · Current-season statistics ·
-        Position-specific opponent defense ·
-        Matchup pace · Teammate injury adjustments.
-        Points use 55% season, 30% last 10, and
-        15% last 5 scoring rates.
-        Estimates are experimental, not guaranteed
-        outcomes.
+        Current-season estimates using recent games,
+        opponent defense, playing time and matchup pace.
+        Points and rebounds use upgraded formulas.
+        These are experimental estimates, not live
+        in-game projections.
       </p>
-
-      <label class="game-label" for="cs-game">
-        Today's and upcoming games
-      </label>
-
+      <label for="cs-game">Today's and upcoming games</label>
       <select id="cs-game"></select>
-
       <div id="cs-game-details"></div>
     `;
 
     const select = root.querySelector("#cs-game");
-
-    upcoming.forEach((game, index) => {
+    upcoming.forEach((g, i) => {
       const option = document.createElement("option");
-
-      option.value = String(index);
-
-      const dateText = new Date(
-        game.date_utc
-      ).toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit"
-      });
-
+      option.value = i;
       option.textContent =
-        `${game.away} @ ${game.home} · ${dateText}`;
-
+        `${g.away} @ ${g.home} · ` +
+        new Date(g.date_utc).toLocaleString(undefined, {
+          month: "short", day: "numeric",
+          hour: "numeric", minute: "2-digit"
+        });
       select.appendChild(option);
     });
 
-    // --------------------------------------------------------
-    // RENDER PLAYER ESTIMATES
-    // --------------------------------------------------------
-
     function render() {
-      const game = upcoming[
-        Number(select.value) || 0
-      ];
-
-      if (!game) return;
-
+      const game = upcoming[Number(select.value) || 0];
       const rows = [];
 
       for (const [team, opponent] of [
         [game.away, game.home],
         [game.home, game.away]
       ]) {
-        const teamPlayers = players.filter(
-          player =>
-            player.team === team &&
-            number(player.games_played) > 0
+        const roster = players.filter(p =>
+          norm(p.team) === norm(team) &&
+          n(p.games_played) > 0
         );
 
-        const absentPlayers = teamPlayers.filter(
-          player => isOut(injuryFor(player))
+        const absentMinutes = roster.reduce(
+          (total, p) =>
+            total + (
+              isOut(injuryFor(p)) ? n(p.minutes_pg) : 0
+            ), 0
         );
 
-        const absentMinutes = absentPlayers.reduce(
-          (sum, player) =>
-            sum + number(player.minutes_pg),
-          0
-        );
-
-        const availableCount = teamPlayers.filter(
-          player => !isOut(injuryFor(player))
+        const available = roster.filter(
+          p => !isOut(injuryFor(p))
         ).length;
 
-        const teammateBoost =
-          availableCount > 0
-            ? Math.min(
-                0.08,
-                (absentMinutes / 240) * 0.22
-              )
-            : 0;
+        const injuryBoost = available
+          ? Math.min(.08, absentMinutes / 240 * .22)
+          : 0;
 
-        for (const player of teamPlayers) {
+        for (const player of roster) {
           const injury = injuryFor(player);
-          const unavailable = isOut(injury);
+          const out = isOut(injury);
 
           const recent = (
-            playerLogs.get(
-              String(player.player_id)
-            ) || []
+            logsByPlayer.get(String(player.player_id)) || []
+          ).filter(l =>
+            String(l.date || "").slice(0, 10) <
+            String(game.date_utc || "").slice(0, 10)
           ).slice(0, 10);
 
-          const position =
-            recent.find(log => log.position)
-              ?.position || "";
+          const position = recent.find(
+            l => l.position
+          )?.position || "";
 
-          let opponentDefense = defense.find(
-            row =>
-              row.opponent === opponent &&
-              row.position === position &&
-              row.position_type === "position"
+          let d = defense.find(x =>
+            norm(x.opponent) === norm(opponent) &&
+            x.position === position &&
+            x.position_type === "position"
           );
 
-          if (!opponentDefense) {
-            const groupedPosition =
-              positionGroup(position);
-
-            opponentDefense = defense.find(
-              row =>
-                row.opponent === opponent &&
-                row.position === groupedPosition &&
-                row.position_type ===
-                  "position_group"
+          if (!d) {
+            d = defense.find(x =>
+              norm(x.opponent) === norm(opponent) &&
+              x.position === group(position) &&
+              x.position_type === "position_group"
             );
           }
 
           const recentMinutes = recent
-            .map(logMinutes)
-            .filter(value => value > 0);
+            .map(minutes).filter(x => x > 0);
 
-          const seasonMinutes = number(
-            player.minutes_pg
-          );
-
-          const recentMinutesAverage =
-            recentMinutes.length
-              ? recentMinutes.reduce(
-                  (sum, value) => sum + value,
-                  0
-                ) / recentMinutes.length
-              : seasonMinutes;
+          const seasonMinutes = n(player.minutes_pg);
+          const recentAverage = recentMinutes.length
+            ? recentMinutes.reduce((a, b) => a + b, 0) /
+              recentMinutes.length
+            : seasonMinutes;
 
           const projectedMinutes = clamp(
-            0.75 * seasonMinutes +
-            0.25 * recentMinutesAverage,
-            0,
-            48
+            .75 * seasonMinutes + .25 * recentAverage,
+            0, 48
           );
 
-          const seasonGames = number(
-            player.games_played
+          const estimates = STATS.map(stat =>
+            out
+              ? "—"
+              : predict(
+                  player, recent, projectedMinutes,
+                  stat, d, opponent, team, injuryBoost
+                ).toFixed(1)
           );
-
-          const estimates = STATS.map(stat => {
-            if (unavailable) return "—";
-
-            const seasonRate =
-              seasonMinutes > 0
-                ? number(
-                    player[stat + "_pg"]
-                  ) / seasonMinutes
-                : 0;
-
-            const validRecent = recent.filter(
-              log =>
-                logMinutes(log) > 0 &&
-                String(log[stat] ?? "").trim() !== ""
-            );
-
-            const recentTotal = validRecent.reduce(
-              (sum, log) =>
-                sum + number(log[stat]),
-              0
-            );
-
-            const recentTotalMinutes =
-              validRecent.reduce(
-                (sum, log) =>
-                  sum + logMinutes(log),
-                0
-              );
-
-            const recentRate =
-              recentTotalMinutes > 0
-                ? recentTotal / recentTotalMinutes
-                : seasonRate;
-
-            const rate =
-              stat === "points"
-                ? pointsRate(player, recent)
-                : blendedRate(
-                    seasonRate,
-                    recentRate,
-                    seasonGames,
-                    validRecent.length
-                  );
-
-            const opponentFactor = defenseFactor(
-              opponentDefense,
-              stat,
-              opponent
-            );
-
-            const matchupPace =
-              stat === "points"
-                ? paceFactor(team, opponent)
-                : 1;
-
-            const estimate =
-              projectedMinutes *
-              rate *
-              opponentFactor *
-              matchupPace *
-              (1 + teammateBoost);
-
-            return Math.max(
-              0,
-              estimate
-            ).toFixed(1);
-          });
-
-          const injuryStatus = injury
-            ? injury.status || "Reported"
-            : "Not listed";
 
           rows.push(`
             <tr>
-              <td>${escapeHTML(player.player_name)}</td>
-              <td>${escapeHTML(team)}</td>
-              <td>${escapeHTML(opponent)}</td>
-              <td>${escapeHTML(position || "—")}</td>
+              <td>${esc(player.player_name)}</td>
+              <td>${esc(team)}</td>
+              <td>${esc(opponent)}</td>
+              <td>${esc(position || "—")}</td>
               <td class="${injury ? "inj" : ""}">
-                ${escapeHTML(injuryStatus)}
+                ${esc(injury?.status || "Not listed")}
               </td>
-              <td>
-                ${opponentDefense
-                  ? escapeHTML(opponentDefense.player_games)
-                  : "—"}
-              </td>
-              ${estimates.map(
-                value => `<td>${value}</td>`
-              ).join("")}
+              <td>${d ? esc(d.player_games) : "—"}</td>
+              ${estimates.map(v => `<td>${v}</td>`).join("")}
             </tr>
           `);
         }
       }
 
-      const dateText = new Date(
-        game.date_utc
-      ).toLocaleString();
-
-      const injuryUpdated =
-        injuries[0]?.last_updated_utc ||
-        "Unknown";
-
-      const statusText =
-        game.status_detail ||
-        game.status ||
-        "Scheduled";
-
-      const details = root.querySelector(
-        "#cs-game-details"
-      );
-
-      details.innerHTML = `
+      root.querySelector("#cs-game-details").innerHTML = `
         <p class="muted">
-          ${escapeHTML(game.away)} @
-          ${escapeHTML(game.home)}
-          · ${escapeHTML(dateText)}
-          · ${escapeHTML(statusText)}
+          ${esc(game.away)} @ ${esc(game.home)} ·
+          ${esc(new Date(game.date_utc).toLocaleString())} ·
+          ${esc(game.status_detail || game.status || "Scheduled")}
         </p>
-
         <p class="muted">
-          Injury report updated:
-          ${escapeHTML(injuryUpdated)}.
-          ${
-            injuriesResult.ok
-              ? "Players not listed are not guaranteed healthy."
-              : "Injury data unavailable."
-          }
           OUT players have no estimate.
-          Other reported statuses remain visible.
-          Teammate injury adjustments are capped at 8%.
-          Points use pace-adjusted opponent defense
-          and matchup pace. These are model estimates,
-          not live in-game projections.
+          Other injury statuses are shown but do not
+          guarantee availability. Defense sample refers
+          to opposing player appearances at the position.
+          Estimates use pregame season data and are
+          not updated from live box scores.
         </p>
-
         <div class="scroll">
           <table>
             <thead>
               <tr>
-                <th>Player</th>
-                <th>Team</th>
-                <th>Opponent</th>
-                <th>Pos</th>
-                <th>Injury status</th>
-                <th>Defense sample</th>
-                ${LABELS.map(
-                  label => `<th>${label}</th>`
-                ).join("")}
+                <th>Player</th><th>Team</th>
+                <th>Opponent</th><th>Pos</th>
+                <th>Injury</th><th>Defense sample</th>
+                ${LABELS.map(x => `<th>${x}</th>`).join("")}
               </tr>
             </thead>
-
             <tbody>
-              ${
-                rows.length
-                  ? rows.join("")
-                  : `<tr>
-                      <td colspan="12">
-                        No matching player statistics.
-                      </td>
-                    </tr>`
-              }
+              ${rows.join("") ||
+                '<tr><td colspan="12">No player stats found</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -894,21 +506,14 @@
     }
 
     select.addEventListener("change", render);
-
     render();
 
   } catch (error) {
-    console.error(
-      "Courtside matchup predictor:",
-      error
-    );
-
+    console.error("Courtside matchup error:", error);
     root.innerHTML = `
       <h2>NBA Schedule & Matchup Stats</h2>
-
       <p class="error">
-        Could not load matchup predictor:
-        ${escapeHTML(error.message)}
+        Could not load predictor: ${esc(error.message)}
       </p>
     `;
   }
