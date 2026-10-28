@@ -1,6 +1,17 @@
 /* Courtside rolling accuracy trends. No Recent Predictions vs Results table. */
 (async function () {
   'use strict';
+  // Clean slate: retain old CSV records, but only show new forecasts from Oct 28, 2026 (Chicago time).
+  const CS_RESET_UTC = Date.parse("2026-10-28T05:00:00Z");
+  function csFresh(r) {
+    const gameDate = String(r.game_date || "").slice(0, 10);
+    if (gameDate && gameDate < "2026-10-28") return false;
+    const saved = Date.parse(r.saved_utc || "");
+    if (Number.isFinite(saved)) return saved >= CS_RESET_UTC;
+    // Rows lacking a saved timestamp cannot be proven to be new.
+    return false;
+  }
+
   const BASE = 'https://raw.githubusercontent.com/joshywoshyj-png/nba-stats-tracker/main/';
   const STATS = [['points','PTS'],['rebounds','REB'],['assists','AST'],['three_pointers','3PM'],['steals','STL'],['blocks','BLK']];
   const esc = x => String(x ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -23,7 +34,7 @@
   try {
     const r=await fetch(BASE+'nba_prediction_results.csv?v='+Date.now(),{cache:'no-store'});
     if(!r.ok)throw Error('Prediction results unavailable');
-    const rows=csv(await r.text()).filter(x=>x.game_date).sort((a,b)=>a.game_date.localeCompare(b.game_date));
+    const rows=csv(await r.text()).filter(x=>x.game_date && csFresh(x)).sort((a,b)=>a.game_date.localeCompare(b.game_date));
     if(!rows.length){root.innerHTML='<h2>Accuracy Trends Over Time</h2><p>No completed scored games yet.</p>';return;}
     root.innerHTML=`<h2>Accuracy Trends Over Time</h2><p class="small">Rolling 30 player-game MAE, compared with the season-average baseline. The last point includes the most recent scored game.</p><label for="csa-stat">Statistic</label> <select id="csa-stat">${STATS.map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select><div style="height:290px;margin-top:14px"><canvas id="csa-trend"></canvas></div><p id="csa-summary" class="small"></p>`;
     const sel=root.querySelector('#csa-stat'),summary=root.querySelector('#csa-summary');let chart=null;

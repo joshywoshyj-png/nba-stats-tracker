@@ -1,6 +1,17 @@
 /* Courtside: model-version accuracy comparison. No odds or betting functionality. */
 (async function () {
   'use strict';
+  // Clean slate: retain old CSV records, but only show new forecasts from Oct 28, 2026 (Chicago time).
+  const CS_RESET_UTC = Date.parse("2026-10-28T05:00:00Z");
+  function csFresh(r) {
+    const gameDate = String(r.game_date || "").slice(0, 10);
+    if (gameDate && gameDate < "2026-10-28") return false;
+    const saved = Date.parse(r.saved_utc || "");
+    if (Number.isFinite(saved)) return saved >= CS_RESET_UTC;
+    // Rows lacking a saved timestamp cannot be proven to be new.
+    return false;
+  }
+
   const root = document.getElementById('cs-model-comparison');
   if (!root) return;
   const url = 'https://raw.githubusercontent.com/joshywoshyj-png/nba-stats-tracker/main/nba_prediction_results.csv?t=' + Date.now();
@@ -33,7 +44,7 @@
   try{
     const response=await fetch(url,{cache:'no-store'});
     if(!response.ok)throw Error('Results file unavailable');
-    const rows=csv(await response.text());
+    const rows=csv(await response.text()).filter(csFresh);
     const versions=new Map();
     for(const r of rows){const version=(r.model_version||'legacy').trim()||'legacy';if(!versions.has(version))versions.set(version,[]);versions.get(version).push(r);}
     const blocks=[...versions.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([name,items])=>table(items,name));

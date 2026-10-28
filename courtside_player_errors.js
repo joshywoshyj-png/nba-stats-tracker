@@ -3,6 +3,17 @@
 
 (async function () {
   "use strict";
+  // Clean slate: retain old CSV records, but only show new forecasts from Oct 28, 2026 (Chicago time).
+  const CS_RESET_UTC = Date.parse("2026-10-28T05:00:00Z");
+  function csFresh(r) {
+    const gameDate = String(r.game_date || "").slice(0, 10);
+    if (gameDate && gameDate < "2026-10-28") return false;
+    const saved = Date.parse(r.saved_utc || "");
+    if (Number.isFinite(saved)) return saved >= CS_RESET_UTC;
+    // Rows lacking a saved timestamp cannot be proven to be new.
+    return false;
+  }
+
 
   const BASE =
     "https://raw.githubusercontent.com/joshywoshyj-png/nba-stats-tracker/main/";
@@ -193,7 +204,7 @@
       throw Error("Could not load prediction results.");
     }
 
-    players = parseCSV(await response.text());
+    players = parseCSV(await response.text()).filter(csFresh);
 
     players.sort((a, b) =>
       String(b.game_date).localeCompare(String(a.game_date)) ||
