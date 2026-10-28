@@ -1,4 +1,3 @@
-
 /* Courtside accuracy dashboard: saved pregame forecasts and MAE. */
 (async function () {
   "use strict";
@@ -107,6 +106,20 @@
       load("nba_prediction_results.csv")
     ]);
 
+    const scoredKeys = new Set(results.map(r =>
+      String(r.game_key) + "|" + String(r.player_id)
+    ));
+
+    const pending = history.filter(r => !scoredKeys.has(
+      String(r.game_key) + "|" + String(r.player_id)
+    ));
+
+    const upcoming = pending.filter(r => {
+      const tip = Date.parse(r.tipoff_utc);
+      return Number.isFinite(tip) && tip > Date.now();
+    });
+
+    const awaiting = pending.length - upcoming.length;
     const count = results.length;
 
     const adjusted = results.filter(row =>
@@ -167,11 +180,11 @@
           Injury-adjusted sample:
           ${adjusted.length} player-games.
 
-          Confirmed in-game injury exclusions:
+          In-game injury exclusions:
           ${excludedCount}.
 
-          Only explicitly confirmed injuries are excluded;
-          low minutes alone do not qualify.
+          Exclusions include automatically detected
+          recap matches and manually confirmed cases.
         </p>
 
         <div class="tablewrap" style="overflow-x:auto">
@@ -209,8 +222,8 @@
         <p class="small">
           Lower MAE is better.
 
-          Injury-adjusted MAE excludes only player-games
-          confirmed in nba_in_game_injuries.csv.
+          Injury-adjusted MAE excludes player-games
+          marked in nba_in_game_injuries.csv.
 
           Both metrics use completed player logs.
 
@@ -226,6 +239,72 @@
           Scores appear after saved pregame estimates
           can be matched to completed ESPN player logs.
         </p>
+      `;
+    }
+
+    const tracker = document.getElementById("cs-prediction-tracker");
+
+    if (tracker) {
+      const latest = [...history].sort((a, b) =>
+        String(b.tipoff_utc).localeCompare(String(a.tipoff_utc))
+      ).slice(0, 30);
+
+      tracker.className = "panel";
+
+      tracker.innerHTML = `
+        <h2>Prediction Tracker</h2>
+
+        <div class="cards">
+          ${[
+            ["Saved", history.length],
+            ["Scored", results.length],
+            ["Pending", pending.length],
+            ["Upcoming", upcoming.length],
+            ["Awaiting box scores", awaiting],
+            ["Injury exclusions", excludedCount]
+          ].map(([label, value]) => `
+            <div class="card">
+              <div class="label">${escapeHTML(label)}</div>
+              <div class="value">${escapeHTML(value)}</div>
+            </div>
+          `).join("")}
+        </div>
+
+        <p class="small">
+          Awaiting box scores also includes unmatched or
+          otherwise unscorable past predictions.
+        </p>
+
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Game date</th>
+                <th>Opponent</th>
+                <th>Predicted PTS</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              ${latest.map(r => `
+                <tr>
+                  <td>${escapeHTML(r.player_name)}</td>
+                  <td>${escapeHTML(r.game_date)}</td>
+                  <td>${escapeHTML(r.opponent)}</td>
+                  <td>${escapeHTML(r.pred_points)}</td>
+                  <td>
+                    ${scoredKeys.has(
+                      String(r.game_key) + "|" + String(r.player_id)
+                    ) ? "Scored" : "Pending"}
+                  </td>
+                </tr>
+              `).join("") ||
+                '<tr><td colspan="5">No predictions saved yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
       `;
     }
 
