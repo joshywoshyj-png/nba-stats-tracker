@@ -314,7 +314,25 @@ def main():
     defense = read_csv("nba_opponent_defense.csv")
     pace = read_csv("nba_team_pace.csv")
     injuries = read_csv("nba_injuries.csv")
-    history = read_csv(HISTORY)
+        history = read_csv(HISTORY)
+       
+    # Correct saved game dates to Chicago local time.
+    # Do not change game IDs or original predictions.
+    corrected_dates = 0
+
+    for record in history:
+        tip = parse_time(record.get("tipoff_utc"))
+
+        if tip is None:
+            continue
+
+        correct_date = local_date(tip).isoformat()
+
+        if record.get("game_date") != correct_date:
+            record["game_date"] = correct_date
+            corrected_dates += 1
+
+    print("Historical game dates corrected:", corrected_dates)
     previous_results = read_csv(RESULTS)
     # Only manually confirmed in-game injuries are excluded from adjusted MAE.
     confirmed_injuries = {}
