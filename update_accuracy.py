@@ -843,7 +843,7 @@ def main():
                 "projected_minutes": round(projected, 2),
                 "position": position,
                 "baseline_games": games,
-                "model_version": "optimized-v2"
+                "model_version": "optimized-v3-ppm"
             }
 
             for stat in STATS:
@@ -909,6 +909,16 @@ def main():
                         projected * weighted_rate
                         * df * pf * (1 + boost)
                     )
+
+                # Consistent PPG + PPM approach for ALL six stats.
+                # The rate-based estimate above uses season, last-10 and
+                # last-5 per-minute production times projected minutes.
+                # For threes, predict_three uses per-minute attempt rates
+                # and shooting percentage. Anchor both paths to the
+                # observed season per-game average to reduce volatility.
+                # Historical validation below can further adjust the blend.
+                rate_estimate = prediction
+                prediction = 0.75 * rate_estimate + 0.25 * baseline
 
                 blend_weight = optimized_blend(stat, previous_results, tip)
                 prediction = (blend_weight * prediction
