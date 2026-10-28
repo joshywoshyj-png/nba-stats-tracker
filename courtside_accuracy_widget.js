@@ -109,14 +109,41 @@
 
     const count = results.length;
 
+    const adjusted = results.filter(row =>
+      !["1", "yes", "true"].includes(
+        String(row.injury_excluded ?? "").trim().toLowerCase()
+      )
+    );
+
+    const excludedCount = count - adjusted.length;
+
+    const mae = (rows, key, prefix) => {
+      const errors = rows.map(row => {
+        const predicted = Number(row[prefix + key]);
+        const actual = Number(row["actual_" + key]);
+
+        return Number.isFinite(predicted) &&
+          Number.isFinite(actual)
+          ? Math.abs(predicted - actual)
+          : null;
+      }).filter(value => value !== null);
+
+      return errors.length
+        ? (
+            errors.reduce((a, b) => a + b, 0) /
+            errors.length
+          ).toFixed(2)
+        : "—";
+    };
+
     let html = `
       <h2>Prediction Accuracy & History</h2>
 
       <p class="small">
         Pregame estimates are saved once and never overwritten.
         Only completed player games with matching ESPN logs
-        are scored. Lower MAE is better. Current-season model;
-        not a validated forecast.
+        are scored. Lower MAE is better.
+        Current-season model; not a validated forecast.
       </p>
     `;
 
@@ -136,40 +163,40 @@
           Mean absolute error (MAE) · ${count} player-games
         </h3>
 
+        <p class="small">
+          Injury-adjusted sample:
+          ${adjusted.length} player-games.
+
+          Confirmed in-game injury exclusions:
+          ${excludedCount}.
+
+          Only explicitly confirmed injuries are excluded;
+          low minutes alone do not qualify.
+        </p>
+
         <div class="tablewrap" style="overflow-x:auto">
           <table>
             <thead>
               <tr>
                 <th>Stat</th>
-                <th>Courtside MAE</th>
+                <th>Overall MAE</th>
+                <th>Injury-adjusted MAE</th>
                 <th>Season-average MAE</th>
-                <th>Difference</th>
+                <th>Adjusted season-average MAE</th>
               </tr>
             </thead>
+
             <tbody>
       `;
 
       for (const [key, label] of stats) {
-        const model = results.reduce((sum, row) =>
-          sum + Math.abs(
-            Number(row["pred_" + key]) -
-            Number(row["actual_" + key])
-          ), 0) / count;
-
-        const baseline = results.reduce((sum, row) =>
-          sum + Math.abs(
-            Number(row["baseline_" + key]) -
-            Number(row["actual_" + key])
-          ), 0) / count;
-
-        const difference = model - baseline;
-
         html += `
           <tr>
             <td>${escapeHTML(label)}</td>
-            <td>${model.toFixed(2)}</td>
-            <td>${baseline.toFixed(2)}</td>
-            <td>${difference.toFixed(2)}</td>
+            <td>${mae(results, key, "pred_")}</td>
+            <td>${mae(adjusted, key, "pred_")}</td>
+            <td>${mae(results, key, "baseline_")}</td>
+            <td>${mae(adjusted, key, "baseline_")}</td>
           </tr>
         `;
       }
@@ -180,18 +207,24 @@
         </div>
 
         <p class="small">
-          Negative difference means the Courtside model
-          had lower error than the season-average baseline.
-          These results cover only players with a completed
-          game log, not players who did not play.
+          Lower MAE is better.
+
+          Injury-adjusted MAE excludes only player-games
+          confirmed in nba_in_game_injuries.csv.
+
+          Both metrics use completed player logs.
+
+          Exclusions do not change saved pregame predictions
+          or historical ranges.
         </p>
       `;
     } else {
       html += `
         <p class="small">
-          No scored results yet. Scores appear after saved
-          pregame estimates can be matched to completed
-          ESPN player logs.
+          No scored results yet.
+
+          Scores appear after saved pregame estimates
+          can be matched to completed ESPN player logs.
         </p>
       `;
     }
@@ -201,10 +234,12 @@
   } catch (error) {
     root.innerHTML = `
       <h2>Prediction Accuracy & History</h2>
+
       <p class="small">
         ${escapeHTML(error.message)}.
-        Run the updated GitHub Actions workflow to
-        create the required CSV files.
+
+        Run the updated GitHub Actions workflow
+        to create the required CSV files.
       </p>
     `;
   }
