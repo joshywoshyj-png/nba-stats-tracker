@@ -23,8 +23,11 @@
 
     body {
       margin: 0;
-      background: radial-gradient(circle at 70% -10%,
-        #291a2c, transparent 40%), var(--bg);
+      background: radial-gradient(
+        circle at 70% -10%,
+        #291a2c,
+        transparent 40%
+      ), var(--bg);
       color: var(--text);
       font: 15px system-ui, Arial, sans-serif;
     }
@@ -65,10 +68,17 @@
       letter-spacing: 1px;
     }
 
-    .muted, .small { color: var(--muted); }
-    .small { font-size: 12px; }
+    .muted, .small {
+      color: var(--muted);
+    }
 
-    .hero { margin: 35px 0 25px; }
+    .small {
+      font-size: 12px;
+    }
+
+    .hero {
+      margin: 35px 0 25px;
+    }
 
     .hero h1 {
       font-size: clamp(26px, 4vw, 40px);
@@ -111,7 +121,11 @@
     }
 
     .panel {
-      background: linear-gradient(150deg, #172132, #111928);
+      background: linear-gradient(
+        150deg,
+        #172132,
+        #111928
+      );
       border: 1px solid var(--line);
       border-radius: 16px;
       padding: 20px;
@@ -125,7 +139,9 @@
 
     .cards {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(
+        4, minmax(0, 1fr)
+      );
       gap: 12px;
       margin: 15px 0;
     }
@@ -154,8 +170,13 @@
       gap: 18px;
     }
 
-    .chartbox { height: 290px; }
-    .scroll { overflow-x: auto; }
+    .chartbox {
+      height: 290px;
+    }
+
+    .scroll {
+      overflow-x: auto;
+    }
 
     table {
       width: 100%;
@@ -170,12 +191,49 @@
       border-bottom: 1px solid var(--line);
     }
 
-    th { color: var(--muted); }
+    th {
+      color: var(--muted);
+    }
 
     .error {
       color: #ff9b9b;
       padding: 12px;
       display: none;
+    }
+
+    /* Expandable prediction errors */
+
+    #cs-player-errors > details > summary {
+      cursor: pointer;
+      font-size: 19px;
+      font-weight: 700;
+      padding: 5px 0;
+    }
+
+    #cs-player-errors summary::marker {
+      color: var(--red);
+    }
+
+    #cs-error-search {
+      width: 100%;
+      margin: 12px 0;
+    }
+
+    #cs-error-content details {
+      margin: 10px 0;
+      padding: 14px;
+      background: #172134;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+
+    #cs-error-content details > summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    #cs-error-content details[open] > summary {
+      margin-bottom: 14px;
     }
 
     footer {
@@ -186,26 +244,42 @@
     }
 
     @media (max-width: 850px) {
-      .grid { grid-template-columns: 1fr; }
-      .cards { grid-template-columns: repeat(2, 1fr); }
-      .toolbar { grid-template-columns: 1fr; }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .cards {
+        grid-template-columns: repeat(
+          2, minmax(0, 1fr)
+        );
+      }
+
+      .toolbar {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 
 <body>
   <main class="wrap">
+
     <header>
       <div class="brand">
         <div class="logo">↗</div>
         <div>
           <strong>COURTSIDE</strong>
-          <div class="small">BASKETBALL ANALYTICS</div>
+          <div class="small">
+            BASKETBALL ANALYTICS
+          </div>
         </div>
       </div>
+
       <div>
         <span class="pill">2026–27 SEASON</span>
-        <span id="status" class="small">Loading data...</span>
+        <span id="status" class="small">
+          Loading data...
+        </span>
       </div>
     </header>
 
@@ -226,18 +300,26 @@
         placeholder="Search NBA players..."
         aria-label="Search players"
       >
+
       <datalist id="players"></datalist>
 
       <select id="player" aria-label="Choose player">
         <option>Loading...</option>
       </select>
 
-      <button id="refresh">Refresh Data</button>
+      <button id="refresh">
+        Refresh Data
+      </button>
     </div>
 
     <div class="heading">
-      <h2 id="playerTitle">Player Overview</h2>
-      <span id="playerTeam" class="pill">Select a player</span>
+      <h2 id="playerTitle">
+        Player Overview
+      </h2>
+
+      <span id="playerTeam" class="pill">
+        Select a player
+      </span>
     </div>
 
     <div id="cards" class="cards"></div>
@@ -246,9 +328,12 @@
       <section class="panel">
         <div class="heading">
           <h2>Performance Trends</h2>
+
           <select id="lastN">
             <option value="5">Last 5</option>
-            <option value="10" selected>Last 10</option>
+            <option value="10" selected>
+              Last 10
+            </option>
             <option value="20">Last 20</option>
             <option value="0">All Games</option>
           </select>
@@ -257,6 +342,7 @@
         <div class="chartbox">
           <canvas id="chart"></canvas>
         </div>
+
         <p class="small">
           Points, rebounds, and assists by game
         </p>
@@ -264,14 +350,21 @@
 
       <section class="panel">
         <h2>Additional Season Averages</h2>
-        <div id="extras" class="cards"
-             style="grid-template-columns:repeat(2,minmax(0,1fr))">
-        </div>
+
+        <div
+          id="extras"
+          class="cards"
+          style="
+            grid-template-columns:
+              repeat(2, minmax(0, 1fr));
+          "
+        ></div>
       </section>
     </div>
 
     <section class="panel">
       <h2>Recent Game Logs</h2>
+
       <div class="scroll">
         <table>
           <thead>
@@ -289,16 +382,46 @@
               <th>TO</th>
             </tr>
           </thead>
+
           <tbody id="gameRows"></tbody>
         </table>
       </div>
     </section>
 
-    <!-- Opponent Defense by Position display removed -->
-
+    <!-- NBA matchup predictions -->
     <section id="cs-schedule"></section>
 
-    <section id="cs-prediction-tracker"></section>  <section id="cs-accuracy-plus"></section>
+    <!-- Saved / scored / pending predictions -->
+    <section id="cs-prediction-tracker"></section>
+
+    <!-- Expandable individual prediction errors -->
+    <section class="panel" id="cs-player-errors">
+      <details>
+        <summary>
+          Player Prediction Errors — Click to Expand
+        </summary>
+
+        <p class="small">
+          Compare predicted stats against actual
+          results for every scored player.
+          Expand a player to see the differences.
+        </p>
+
+        <input
+          id="cs-error-search"
+          type="search"
+          placeholder="Search players..."
+          aria-label="Search prediction errors"
+        >
+
+        <div id="cs-error-content">
+          Loading player errors...
+        </div>
+      </details>
+    </section>
+
+    <!-- Detailed accuracy dashboard -->
+    <section id="cs-accuracy-plus"></section>
 
     <footer>
       COURTSIDE · NBA statistics sourced from ESPN
@@ -314,10 +437,13 @@
 
     const num = x =>
       x === "" || x == null || !Number.isFinite(Number(x))
-        ? 0 : Number(x);
+        ? 0
+        : Number(x);
 
     const fmt = x =>
-      x === "" || x == null ? "—" : num(x).toFixed(1);
+      x === "" || x == null
+        ? "—"
+        : num(x).toFixed(1);
 
     const esc = x => String(x ?? "").replace(
       /[&<>"']/g,
@@ -336,7 +462,9 @@
 
     function csvParse(text) {
       const rows = [];
-      let row = [], cell = "", quoted = false;
+      let row = [];
+      let cell = "";
+      let quoted = false;
 
       for (let i = 0; i < text.length; i++) {
         const c = text[i];
@@ -351,10 +479,22 @@
         } else if (c === "," && !quoted) {
           row.push(cell);
           cell = "";
-        } else if ((c === "\n" || c === "\r") && !quoted) {
-          if (c === "\r" && text[i + 1] === "\n") i++;
+        } else if (
+          (c === "\n" || c === "\r") && !quoted
+        ) {
+          if (
+            c === "\r" &&
+            text[i + 1] === "\n"
+          ) {
+            i++;
+          }
+
           row.push(cell);
-          if (row.some(v => v !== "")) rows.push(row);
+
+          if (row.some(v => v !== "")) {
+            rows.push(row);
+          }
+
           row = [];
           cell = "";
         } else {
@@ -371,7 +511,9 @@
         .map(h => h.replace(/^\uFEFF/, ""));
 
       return rows.map(r => Object.fromEntries(
-        headers.map((h, i) => [h, r[i] ?? ""])
+        headers.map((h, i) => [
+          h, r[i] ?? ""
+        ])
       ));
     }
 
@@ -382,7 +524,9 @@
       );
 
       if (!response.ok) {
-        throw Error(file + ": HTTP " + response.status);
+        throw Error(
+          file + ": HTTP " + response.status
+        );
       }
 
       return csvParse(await response.text());
@@ -391,15 +535,20 @@
     function card(label, value) {
       return `
         <div class="card">
-          <div class="label">${esc(label)}</div>
-          <div class="value">${esc(value)}</div>
+          <div class="label">
+            ${esc(label)}
+          </div>
+          <div class="value">
+            ${esc(value)}
+          </div>
         </div>
       `;
     }
 
     function dateKey(value) {
       return String(value || "")
-        .replace(/\D/g, "").slice(0, 8);
+        .replace(/\D/g, "")
+        .slice(0, 8);
     }
 
     function renderPlayer() {
@@ -409,7 +558,9 @@
 
       if (!player) return;
 
-      $("playerTitle").textContent = player.player_name;
+      $("playerTitle").textContent =
+        player.player_name;
+
       $("playerTeam").textContent =
         `${player.team} · ${player.games_played} games`;
 
@@ -421,7 +572,8 @@
       ];
 
       $("cards").innerHTML = mainStats.map(
-        ([key, label]) => card(label, fmt(player[key]))
+        ([key, label]) =>
+          card(label, fmt(player[key]))
       ).join("");
 
       const extras = [
@@ -433,24 +585,35 @@
       ];
 
       $("extras").innerHTML = extras.map(
-        ([key, label]) => card(label, fmt(player[key]))
+        ([key, label]) =>
+          card(label, fmt(player[key]))
       ).join("");
 
       const playerLogs = logs.filter(l =>
-        String(l.player_id) === String(player.player_id)
+        String(l.player_id) ===
+        String(player.player_id)
       ).sort((a, b) =>
-        dateKey(b.date).localeCompare(dateKey(a.date))
+        dateKey(b.date).localeCompare(
+          dateKey(a.date)
+        )
       );
 
       const columns = [
-        "date", "opponent", "minutes",
-        "points", "rebounds", "assists",
-        "three_pointers", "three_pointers_attempted",
-        "steals", "blocks", "turnovers"
+        "date",
+        "opponent",
+        "minutes",
+        "points",
+        "rebounds",
+        "assists",
+        "three_pointers",
+        "three_pointers_attempted",
+        "steals",
+        "blocks",
+        "turnovers"
       ];
 
-      $("gameRows").innerHTML = playerLogs.slice(0, 10)
-        .map(log => `
+      $("gameRows").innerHTML =
+        playerLogs.slice(0, 10).map(log => `
           <tr>
             ${columns.map(key =>
               `<td>${esc(log[key] ?? "—")}</td>`
@@ -465,43 +628,60 @@
       }
 
       const limit = num($("lastN").value);
+
       const selected = (
-        limit ? playerLogs.slice(0, limit) : playerLogs
+        limit
+          ? playerLogs.slice(0, limit)
+          : playerLogs
       ).reverse();
 
       if (typeof Chart !== "undefined") {
         chart = new Chart($("chart"), {
           type: "line",
+
           data: {
             labels: selected.map(l => l.date),
+
             datasets: [
               ["points", "Points", "#ef4444"],
               ["rebounds", "Rebounds", "#60a5fa"],
               ["assists", "Assists", "#34d399"]
             ].map(([key, label, color]) => ({
               label,
-              data: selected.map(l => num(l[key])),
+              data: selected.map(l =>
+                num(l[key])
+              ),
               borderColor: color,
               backgroundColor: color,
               tension: 0.3,
               pointRadius: 3
             }))
           },
+
           options: {
             responsive: true,
             maintainAspectRatio: false,
+
             plugins: {
               legend: {
-                labels: { color: "#cbd5e1" }
+                labels: {
+                  color: "#cbd5e1"
+                }
               }
             },
+
             scales: {
               x: {
-                ticks: { color: "#a5b3c8" }
+                ticks: {
+                  color: "#a5b3c8"
+                }
               },
+
               y: {
                 beginAtZero: true,
-                ticks: { color: "#a5b3c8" }
+                ticks: {
+                  color: "#a5b3c8"
+                }
               }
             }
           }
@@ -510,7 +690,9 @@
     }
 
     async function loadData() {
-      $("status").textContent = "Loading data...";
+      $("status").textContent =
+        "Loading data...";
+
       $("refresh").disabled = true;
       $("error").style.display = "none";
 
@@ -521,7 +703,9 @@
         ]);
 
         if (!s.length) {
-          throw Error("Player stats are empty.");
+          throw Error(
+            "Player stats are empty."
+          );
         }
 
         const previous = $("player").value;
@@ -529,21 +713,25 @@
         season = s;
         logs = l;
 
-        const ordered = [...season].sort((a, b) =>
-          String(a.player_name).localeCompare(
-            String(b.player_name)
-          )
+        const ordered = [...season].sort(
+          (a, b) =>
+            String(a.player_name).localeCompare(
+              String(b.player_name)
+            )
         );
 
-        $("player").innerHTML = ordered.map(p => `
-          <option value="${esc(p.player_id)}">
-            ${esc(p.player_name)} (${esc(p.team)})
-          </option>
-        `).join("");
+        $("player").innerHTML =
+          ordered.map(p => `
+            <option value="${esc(p.player_id)}">
+              ${esc(p.player_name)}
+              (${esc(p.team)})
+            </option>
+          `).join("");
 
-        $("players").innerHTML = ordered.map(p =>
-          `<option value="${esc(p.player_name)}"></option>`
-        ).join("");
+        $("players").innerHTML =
+          ordered.map(p => `
+            <option value="${esc(p.player_name)}"></option>
+          `).join("");
 
         if (ordered.some(p =>
           String(p.player_id) === previous
@@ -557,57 +745,99 @@
           `Loaded · ${season.length} players`;
 
       } catch (error) {
-        $("status").textContent = "Data unavailable";
+        $("status").textContent =
+          "Data unavailable";
+
         $("error").textContent =
-          "Could not load NBA data: " + error.message;
-        $("error").style.display = "block";
+          "Could not load NBA data: " +
+          error.message;
+
+        $("error").style.display =
+          "block";
+
       } finally {
         $("refresh").disabled = false;
       }
     }
 
-    $("refresh").addEventListener("click", loadData);
-    $("player").addEventListener("change", renderPlayer);
-    $("lastN").addEventListener("change", renderPlayer);
+    $("refresh").addEventListener(
+      "click", loadData
+    );
+
+    $("player").addEventListener(
+      "change", renderPlayer
+    );
+
+    $("lastN").addEventListener(
+      "change", renderPlayer
+    );
 
     function searchPlayer() {
-      const q = $("search").value.trim().toLowerCase();
+      const q = $("search").value
+        .trim().toLowerCase();
 
       const found = season.find(p =>
-        String(p.player_name).toLowerCase() === q
+        String(p.player_name)
+          .toLowerCase() === q
       ) || season.find(p =>
-        String(p.player_name).toLowerCase().includes(q)
+        String(p.player_name)
+          .toLowerCase()
+          .includes(q)
       );
 
       if (found) {
-        $("player").value = String(found.player_id);
+        $("player").value =
+          String(found.player_id);
+
         renderPlayer();
       }
     }
 
-    $("search").addEventListener("change", searchPlayer);
+    $("search").addEventListener(
+      "change", searchPlayer
+    );
 
-    $("search").addEventListener("keydown", e => {
-      if (e.key === "Enter") {
-        searchPlayer();
-        e.preventDefault();
+    $("search").addEventListener(
+      "keydown", e => {
+        if (e.key === "Enter") {
+          searchPlayer();
+          e.preventDefault();
+        }
       }
-    });
+    );
 
     loadData();
   </script>
 
   <!-- NBA matchup predictions -->
-  <script src="courtside_schedule_widget.js" defer></script>
+  <script
+    src="courtside_schedule_widget.js"
+    defer
+  ></script>
 
   <!-- Injury reports and NBA news -->
-  <script src="courtside_news_injuries.js" defer></script>
+  <script
+    src="courtside_news_injuries.js"
+    defer
+  ></script>
 
-  <!-- Original accuracy dashboard -->
-  <script src="courtside_accuracy_widget.js" defer></script>
+  <!-- Original accuracy dashboard and tracker -->
+  <script
+    src="courtside_accuracy_widget.js"
+    defer
+  ></script>
 
   <!-- Detailed accuracy dashboard -->
-  <script src="courtside_accuracy_plus.js" defer></script>
+  <script
+    src="courtside_accuracy_plus.js"
+    defer
+  ></script>
+
+  <!-- Expandable player prediction errors -->
+  <script
+    src="courtside_player_errors.js"
+    defer
+  ></script>
 
 </body>
 </html>
