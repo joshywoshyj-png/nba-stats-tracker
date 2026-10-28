@@ -35,7 +35,7 @@ IN_GAME_INJURIES = Path("nba_in_game_injuries.csv")
 HISTORY_FIELDS = [
     "game_key", "game_date", "tipoff_utc", "saved_utc",
     "player_id", "player_name", "team", "opponent",
-    "projected_minutes", "position", "baseline_games"
+    "projected_minutes", "position", "baseline_games", "model_version"
 ] + [f"pred_{s}" for s in STATS] + [
     f"baseline_{s}" for s in STATS
 ] + [f"range_low_{s}" for s in STATS] + [
@@ -393,31 +393,46 @@ def historical_bias(stat, player_id, past_results, tip):
 
 
 def optimized_blend(stat, past_results, tip):
-    """Fit on earlier completed games only; shrink toward unmodified forecast."""
+    """Conservative pregame-only MAE optimization, with chronological validation.
+
+    Uses immutable, previously saved forecasts and season baselines. Only games
+    completed before tipoff are eligible. Avoids fitting on the holdout period.
+    """
     samples = []
-    for r in past_results:
-        t = parse_time(r.get("tipoff_utc"))
-        if not t or t >= tip or str(r.get("injury_excluded", "0")).lower() in ("1", "true", "yes"):
+    for row in past_results:
+        t = parse_time(row.get("tipoff_utc"))
+        if not t or t >= tip or str(row.get("injury_excluded", "0")).lower() in ("1", "true", "yes"):
             continue
         keys = ["pred_" + stat, "baseline_" + stat, "actual_" + stat]
-        if any(not str(r.get(k, "")).strip() for k in keys):
+        if any(not str(row.get(k, "")).strip() for k in keys):
             continue
-        samples.append((t, *(n(r[k]) for k in keys)))
+        vals = [n(row[k]) for k in keys]
+        if not all(math.isfinite(v) for v in vals):
+            continue
+        samples.append((t, *vals))
+    samples.sort(key=lambda row: row[0])
     if len(samples) < 100:
         return 1.0
-    samples.sort(key=lambda x: x[0])
-    # Use older 80% for fitting, newest 20% as a safety check.
-    split = int(len(samples) * .8)
-    train, valid = samples[:split], samples[split:]
-    if len(valid) < 20:
+    # Entire dates stay together, so same-day outcomes cannot leak across splits.
+    dates = sorted({local_date(row[0]) for row in samples})
+    if len(dates) < 6:
         return 1.0
-    candidates = (0.5, 0.65, 0.8, 0.9, 1.0)
+    boundary = dates[max(1, int(len(dates) * .75))]
+    train = [row for row in samples if local_date(row[0]) < boundary]
+    holdout = [row for row in samples if local_date(row[0]) >= boundary]
+    if len(train) < 70 or len(holdout) < 25:
+        return 1.0
     def mae(rows, weight):
-        return sum(abs(weight * p + (1-weight) * b - a) for _,p,b,a in rows) / len(rows)
-    best = min(candidates, key=lambda w: mae(train,w))
-    if mae(valid,best) >= mae(valid,1.0) * .995:
+        return sum(abs(weight*p + (1-weight)*b - a) for _,p,b,a in rows) / len(rows)
+    candidates = (0.0, .25, .5, .75, 1.0)
+    best = min(candidates, key=lambda w: mae(train, w))
+    # Only enable the adjustment if it improves on BOTH saved forecast and
+    # season-average on later unseen games, by at least 1%.
+    score = mae(holdout, best)
+    if score >= .99 * min(mae(holdout, 1.0), mae(holdout, 0.0)):
         return 1.0
-    return .5 * best + .5
+    # Shrink optimization toward the original model to reduce overfitting.
+    return round(.75 * best + .25, 3)
 
 
 def main():
@@ -827,7 +842,8 @@ def main():
                 "opponent": opponent,
                 "projected_minutes": round(projected, 2),
                 "position": position,
-                "baseline_games": games
+                "baseline_games": games,
+                "model_version": "optimized-v2"
             }
 
             for stat in STATS:
