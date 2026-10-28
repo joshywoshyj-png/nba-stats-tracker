@@ -14,6 +14,7 @@ import math
 import re
 import unicodedata
 from collections import defaultdict
+from statistics import median
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -364,6 +365,61 @@ def calibrated_half_width(
     )
 
 
+def prior_rest_factor(recent, game_day):
+    """Small, conservative adjustment when the player's prior game was yesterday."""
+    days = [(game_day - d).days for row in recent
+            if (d := date_value(row.get("date"))) and d < game_day]
+    if not days:
+        return 1.0
+    return 0.985 if min(days) == 1 else 1.0
+
+
+def historical_bias(stat, player_id, past_results, tip):
+    """Shrink signed pregame residuals toward zero; never train on future games."""
+    eligible = [r for r in past_results
+                if (t := parse_time(r.get("tipoff_utc"))) and t < tip
+                and str(r.get("injury_excluded", "0")).lower() not in ("1", "true", "yes")
+                and str(r.get("actual_" + stat, "")).strip()
+                and str(r.get("pred_" + stat, "")).strip()]
+    if len(eligible) < 40:
+        return 0.0
+    pool = [n(r["actual_" + stat]) - n(r["pred_" + stat]) for r in eligible]
+    personal = [n(r["actual_" + stat]) - n(r["pred_" + stat]) for r in eligible
+                if str(r.get("player_id")) == str(player_id)]
+    pooled = sum(pool) / len(pool)
+    own = sum(personal) / len(personal) if personal else pooled
+    shrink = len(personal) / (len(personal) + 30)
+    return clamp(.20 * pooled + .30 * shrink * (own - pooled), -1.5, 1.5)
+
+
+def optimized_blend(stat, past_results, tip):
+    """Fit on earlier completed games only; shrink toward unmodified forecast."""
+    samples = []
+    for r in past_results:
+        t = parse_time(r.get("tipoff_utc"))
+        if not t or t >= tip or str(r.get("injury_excluded", "0")).lower() in ("1", "true", "yes"):
+            continue
+        keys = ["pred_" + stat, "baseline_" + stat, "actual_" + stat]
+        if any(not str(r.get(k, "")).strip() for k in keys):
+            continue
+        samples.append((t, *(n(r[k]) for k in keys)))
+    if len(samples) < 100:
+        return 1.0
+    samples.sort(key=lambda x: x[0])
+    # Use older 80% for fitting, newest 20% as a safety check.
+    split = int(len(samples) * .8)
+    train, valid = samples[:split], samples[split:]
+    if len(valid) < 20:
+        return 1.0
+    candidates = (0.5, 0.65, 0.8, 0.9, 1.0)
+    def mae(rows, weight):
+        return sum(abs(weight * p + (1-weight) * b - a) for _,p,b,a in rows) / len(rows)
+    best = min(candidates, key=lambda w: mae(train,w))
+    if mae(valid,best) >= mae(valid,1.0) * .995:
+        return 1.0
+    return .5 * best + .5
+
+
 def main():
     players = read_csv("nba_stats.csv")
     logs = read_csv("nba_game_logs.csv")
@@ -593,6 +649,7 @@ def main():
 
     new_snapshots = 0
 
+
     # Save predictions for upcoming games only.
     for game in schedule:
         tip = parse_time(game.get("date_utc"))
@@ -705,7 +762,7 @@ def main():
             )
 
             projected = clamp(
-                base_projected + extra_minutes, 0, 48
+                (base_projected + extra_minutes) * prior_rest_factor(recent, game_day), 0, 48
             )
 
             boost = (
@@ -837,6 +894,11 @@ def main():
                         * df * pf * (1 + boost)
                     )
 
+                blend_weight = optimized_blend(stat, previous_results, tip)
+                prediction = (blend_weight * prediction
+                              + (1 - blend_weight) * baseline)
+                prediction = max(0, prediction + historical_bias(
+                    stat, pid, previous_results, tip))
                 record["pred_" + stat] = round(
                     prediction, 3
                 )
