@@ -10,6 +10,7 @@ Game dates use America/Chicago local time.
 """
 
 import csv
+import os
 import math
 import re
 import unicodedata
@@ -665,12 +666,21 @@ def main():
     new_snapshots = 0
 
 
-    # Save predictions for upcoming games only.
-    for game in schedule:
+    # New snapshots only during the dedicated 1 AM Central scheduled run.
+    # All other workflow runs still score completed games and preserve history.
+    central_now = NOW.astimezone(CHICAGO)
+    snapshot_window = (
+        os.environ.get("COURTSIDE_SAVE_PREDICTIONS") == "1"
+        and central_now.hour == 1
+    )
+    print("Daily snapshot enabled:", snapshot_window, "Central time:", central_now.isoformat())
+
+    # Save predictions for today's Central-calendar-day games only.
+    for game in (schedule if snapshot_window else []):
         tip = parse_time(game.get("date_utc"))
 
         if tip is None or not (
-            NOW < tip <= NOW + timedelta(hours=48)
+            NOW < tip and local_date(tip) == central_now.date()
         ):
             continue
 
