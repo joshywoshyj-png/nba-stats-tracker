@@ -120,9 +120,37 @@
     });
 
     const awaiting = pending.length - upcoming.length;
-    const count = results.length;
+    // Weekly reporting only: preserve all saved predictions and scored CSV rows.
+    // A reporting week starts Monday at 01:00 America/Chicago (DST-aware).
+    const chicagoParts = instant => {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Chicago", year: "numeric", month: "2-digit",
+        day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+      }).formatToParts(instant);
+      const p = Object.fromEntries(parts.map(x => [x.type, x.value]));
+      return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+    };
+    const chicagoNow = chicagoParts(new Date());
+    const localDate = chicagoNow.slice(0, 10);
+    const day = new Date(`${localDate}T12:00:00Z`).getUTCDay();
+    const daysSinceMonday = (day + 6) % 7;
+    const monday = new Date(`${localDate}T12:00:00Z`);
+    monday.setUTCDate(monday.getUTCDate() - daysSinceMonday);
+    if (daysSinceMonday === 0 && chicagoNow.slice(11) < "01:00") {
+      monday.setUTCDate(monday.getUTCDate() - 7);
+    }
+    const weekStart = monday.toISOString().slice(0, 10) + "T01:00";
+    const weeklyResults = results.filter(row => {
+      const tipoff = Date.parse(row.tipoff_utc || "");
+      if (Number.isFinite(tipoff)) return chicagoParts(new Date(tipoff)) >= weekStart;
+      // Older records without tipoff_utc: approximate from the local game date.
+      const gameDate = String(row.game_date || "").slice(0, 10);
+      return /^\d{4}-\d{2}-\d{2}$/.test(gameDate) &&
+        `${gameDate}T12:00` >= weekStart;
+    });
+    const count = weeklyResults.length;
 
-    const adjusted = results.filter(row =>
+    const adjusted = weeklyResults.filter(row =>
       !["1", "yes", "true"].includes(
         String(row.injury_excluded ?? "").trim().toLowerCase()
       )
@@ -170,10 +198,12 @@
       `;
     }
 
+    html += `<p class="small"><strong>Weekly reporting:</strong> ${escapeHTML(weekStart.replace("T", " "))} Central through now. Automatically rolls over every Monday at 1:00 AM Central; saved historical data is retained.</p>`;
+
     if (count > 0) {
       html += `
         <h3>
-          Mean absolute error (MAE) · ${count} player-games
+          Weekly mean absolute error (MAE) · ${count} player-games
         </h3>
 
         <p class="small">
@@ -206,9 +236,9 @@
         html += `
           <tr>
             <td>${escapeHTML(label)}</td>
-            <td>${mae(results, key, "pred_")}</td>
+            <td>${mae(weeklyResults, key, "pred_")}</td>
             <td>${mae(adjusted, key, "pred_")}</td>
-            <td>${mae(results, key, "baseline_")}</td>
+            <td>${mae(weeklyResults, key, "baseline_")}</td>
             <td>${mae(adjusted, key, "baseline_")}</td>
           </tr>
         `;
@@ -234,7 +264,7 @@
     } else {
       html += `
         <p class="small">
-          No scored results yet.
+          No scored player-games in the current reporting week yet.
 
           Scores appear after saved pregame estimates
           can be matched to completed ESPN player logs.
