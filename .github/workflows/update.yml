@@ -1,3 +1,4 @@
+
 name: Update NBA Stats and Schedule
 
 on:
@@ -5,6 +6,8 @@ on:
     - cron: '7 0-11,13-23 * * *'
     - cron: '22,37,52 * * * *'
     - cron: '7 12 * * *'
+    # 1:00 AM Central: 06:00 UTC during daylight time, 07:00 UTC in standard time.
+    - cron: '0 6,7 * * *'
   workflow_dispatch:
 
 permissions:
@@ -18,41 +21,32 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         run: pip install pandas requests
-
       - name: Refresh NBA stats and game logs
         run: python update_nba.py
-
       - name: Update schedule
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 12 * * *'
+        if: github.event_name == 'workflow_dispatch' || (github.event.schedule == '7 12 * * *' || github.event.schedule == '0 6,7 * * *')
         run: python update_schedule.py
-
       - name: Update news and injury reports
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 12 * * *'
+        if: github.event_name == 'workflow_dispatch' || (github.event.schedule == '7 12 * * *' || github.event.schedule == '0 6,7 * * *')
         run: python update_news_injuries.py
-
-      - name: Score finished games
+      - name: Score finished games and save daily snapshots
+        env:
+          COURTSIDE_SAVE_PREDICTIONS: ${{ github.event_name == 'schedule' && github.event.schedule == '0 6,7 * * *' && '1' || '0' }}
         run: python update_accuracy.py
-
       - name: Detect in-game injuries
         run: python detect_in_game_injuries.py
-
       - name: Refresh injury-adjusted results
         run: python update_accuracy.py
-
       - name: Backtest once daily
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 12 * * *'
+        if: github.event_name == 'workflow_dispatch' || (github.event.schedule == '7 12 * * *' || github.event.schedule == '0 6,7 * * *')
         run: python backtest_formulas.py
-
       - name: Commit refreshed data
         run: |
           git config user.name 'github-actions[bot]'
@@ -61,4 +55,3 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m 'Update Courtside data and accuracy'
             git push
-          fi
