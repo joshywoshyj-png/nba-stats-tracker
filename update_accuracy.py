@@ -26,6 +26,7 @@ PACE_STATS = set(STATS)
 
 HISTORY = Path("nba_prediction_history.csv")
 RESULTS = Path("nba_prediction_results.csv")
+IN_GAME_INJURIES = Path("nba_in_game_injuries.csv")
 
 HISTORY_FIELDS = [
     "game_key", "game_date", "tipoff_utc", "saved_utc",
@@ -38,7 +39,7 @@ HISTORY_FIELDS = [
 ]
 
 RESULT_FIELDS = HISTORY_FIELDS + [
-    "actual_minutes"
+    "injury_excluded", "injury_note", "actual_minutes"
 ] + [f"actual_{s}" for s in STATS] + [
     f"error_{s}" for s in STATS
 ] + [f"covered_{s}" for s in STATS]
@@ -282,6 +283,7 @@ def player_variability(stat, recent, player, projected, prediction):
     mean = sum(vals) / len(vals) if vals else 0
     sd = math.sqrt(sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)) \
         if len(vals) >= 3 else math.sqrt(max(1, prediction))
+
     prior = max(.5, math.sqrt(max(1, prediction)))
     return max(.5, math.sqrt((len(vals) * sd * sd + 8 * prior * prior) /
                                (len(vals) + 8)))
@@ -314,6 +316,15 @@ def main():
     injuries = read_csv("nba_injuries.csv")
     history = read_csv(HISTORY)
     previous_results = read_csv(RESULTS)
+    # Only manually confirmed in-game injuries are excluded from adjusted MAE.
+    confirmed_injuries = {}
+    for entry in read_csv(IN_GAME_INJURIES):
+        if norm(entry.get("confirmed")) not in {"YES", "TRUE", "1"}:
+            continue
+        key = (str(entry.get("game_key", "")).strip(),
+               str(entry.get("player_id", "")).strip())
+        if all(key):
+            confirmed_injuries[key] = entry.get("note", "")
 
     print("COURTSIDE ACCURACY UPDATE")
     print("Players:", len(players))
@@ -558,6 +569,7 @@ def main():
                 if last5_minutes else season_minutes
             )
             base_projected = (
+
                 .45 * season_minutes
                 + .35 * recent_average
                 + .20 * recent5_average
@@ -786,6 +798,10 @@ def main():
             continue
 
         result = dict(record)
+        injury_key = (str(record.get("game_key", "")).strip(),
+                      str(record.get("player_id", "")).strip())
+        result["injury_excluded"] = int(injury_key in confirmed_injuries)
+        result["injury_note"] = confirmed_injuries.get(injury_key, "")
         result["actual_minutes"] = round(
             minutes(actual), 2
         )
@@ -838,4 +854,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
