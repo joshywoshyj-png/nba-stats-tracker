@@ -1,17 +1,23 @@
-
 name: Update NBA Stats and Schedule
 
 on:
   schedule:
-    - cron: '0 12 * * *'
+    - cron: '7 0-11,13-23 * * *'
+    - cron: '22,37,52 * * * *'
+    - cron: '7 12 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: courtside-nba-updates
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -23,33 +29,36 @@ jobs:
       - name: Install dependencies
         run: pip install pandas requests
 
-      - name: Update NBA data
+      - name: Refresh NBA stats and game logs
         run: python update_nba.py
 
       - name: Update schedule
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 12 * * *'
         run: python update_schedule.py
 
-      - name: Update news and injuries
+      - name: Update news and injury reports
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 12 * * *'
         run: python update_news_injuries.py
 
-      - name: Score pregame predictions
+      - name: Score finished games
         run: python update_accuracy.py
 
       - name: Detect in-game injuries
         run: python detect_in_game_injuries.py
 
-      - name: Refresh injury-adjusted accuracy
+      - name: Refresh injury-adjusted results
         run: python update_accuracy.py
 
-      - name: Evaluate formulas
+      - name: Backtest once daily
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 12 * * *'
         run: python backtest_formulas.py
 
-      - name: Commit updated data
+      - name: Commit refreshed data
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add nba_*.csv
           if ! git diff --cached --quiet; then
-            git commit -m 'Update Courtside NBA data and accuracy'
+            git commit -m 'Update Courtside data and accuracy'
             git push
           fi
