@@ -1,29 +1,49 @@
+
 name: Update NBA Stats and Schedule
+
 on:
   schedule:
     - cron: '0 12 * * *'
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   update:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pandas requests
+
+      - name: Install dependencies
+        run: pip install pandas requests
+
       - name: Update NBA data
         run: python update_nba.py
+
       - name: Update schedule
         run: python update_schedule.py
+
       - name: Update news and injuries
         run: python update_news_injuries.py
+
       - name: Score pregame predictions
         run: python update_accuracy.py
+
+      - name: Detect in-game injuries
+        run: python detect_in_game_injuries.py
+
+      - name: Refresh injury-adjusted accuracy
+        run: python update_accuracy.py
+
       - name: Evaluate formulas
         run: python backtest_formulas.py
+
       - name: Commit updated data
         run: |
           git config user.name 'github-actions[bot]'
