@@ -505,7 +505,7 @@
         blocks: .35
       }[stat] || .35;
 
-      halfWidth = Math.max(floor, halfWidth);
+      halfWidth = Math.min(5, Math.max(floor, halfWidth));
 
       const low = Math.max(
         0,
