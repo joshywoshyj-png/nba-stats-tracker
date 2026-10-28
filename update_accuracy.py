@@ -1,14 +1,18 @@
 
 """
 COURTSIDE — NBA ACCURACY TRACKER
-All six stats: PTS, REB, AST, 3PM, STL, BLK.
 
-Preserves saved predictions, creates new pregame snapshots,
-and scores completed games against player game logs.
+Saves pregame predictions, scores completed NBA games,
+tracks six player stats, and excludes confirmed in-game
+injuries from injury-adjusted accuracy.
+
+Game dates use America/Chicago local time.
 """
 
 import csv
 import math
+import re
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,7 +26,6 @@ STATS = (
     "points", "rebounds", "assists",
     "three_pointers", "steals", "blocks"
 )
-PACE_STATS = set(STATS)
 
 HISTORY = Path("nba_prediction_history.csv")
 RESULTS = Path("nba_prediction_results.csv")
@@ -45,13 +48,20 @@ RESULT_FIELDS = HISTORY_FIELDS + [
 ] + [f"covered_{s}" for s in STATS]
 
 ATTEMPT_KEYS = [
-    "three_pointers_attempted", "three_point_attempts",
-    "three_point_attempted", "three_pointers_attempts",
-    "three_point_attempts_pg", "three_pointers_attempted_pg",
-    "three_pa", "three_pa_pg",
+    "three_pointers_attempted",
+    "three_point_attempts",
+    "three_point_attempted",
+    "three_pointers_attempts",
+    "three_point_attempts_pg",
+    "three_pointers_attempted_pg",
+    "three_pa",
+    "three_pa_pg",
     "three_point_attempts_per_game",
     "three_pointers_attempted_per_game",
-    "fg3a", "fg3a_pg", "3pa", "3pa_pg"
+    "fg3a",
+    "fg3a_pg",
+    "3pa",
+    "3pa_pg"
 ]
 
 
@@ -69,6 +79,7 @@ def write_csv(path, fields, rows):
         for key in row:
             if key not in columns:
                 columns.append(key)
+
     with Path(path).open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f, fieldnames=columns, extrasaction="ignore"
@@ -96,8 +107,6 @@ def norm(x):
 
 
 def name_key(x):
-    import unicodedata
-    import re
     text = unicodedata.normalize("NFKD", str(x or ""))
     text = "".join(
         c for c in text if not unicodedata.combining(c)
@@ -124,6 +133,7 @@ def date_value(value):
             return datetime.strptime(
                 value[:10], "%Y-%m-%d"
             ).date()
+
         if len(value) >= 8 and value[:8].isdigit():
             return datetime.strptime(
                 value[:8], "%Y%m%d"
@@ -226,12 +236,8 @@ def predict_three(player, recent, projected, df, pf, boost):
 
     season_attempt_rate = season_attempts / season_minutes
 
-    l10 = attempt_rate(
-        recent[:10], season_attempt_rate
-    )
-    l5 = attempt_rate(
-        recent[:5], season_attempt_rate
-    )
+    l10 = attempt_rate(recent[:10], season_attempt_rate)
+    l5 = attempt_rate(recent[:5], season_attempt_rate)
 
     projected_attempts = projected * (
         .50 * season_attempt_rate
@@ -272,39 +278,90 @@ def quantile(values, q=.8):
     if not values:
         return None
     values = sorted(values)
-    idx = min(len(values) - 1, max(0, math.ceil(q * (len(values) + 1)) - 1))
+    idx = min(
+        len(values) - 1,
+        max(0, math.ceil(q * (len(values) + 1)) - 1)
+    )
     return values[idx]
 
 
 def player_variability(stat, recent, player, projected, prediction):
-    vals = [n(row.get(stat)) * projected / minutes(row)
-            for row in recent[:20]
-            if minutes(row) > 0 and str(row.get(stat, "")).strip() != ""]
+    vals = [
+        n(row.get(stat)) * projected / minutes(row)
+        for row in recent[:20]
+        if minutes(row) > 0
+        and str(row.get(stat, "")).strip() != ""
+    ]
+
     mean = sum(vals) / len(vals) if vals else 0
-    sd = math.sqrt(sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)) \
-        if len(vals) >= 3 else math.sqrt(max(1, prediction))
+
+    sd = (
+        math.sqrt(
+            sum((v - mean) ** 2 for v in vals)
+            / (len(vals) - 1)
+        )
+        if len(vals) >= 3
+        else math.sqrt(max(1, prediction))
+    )
 
     prior = max(.5, math.sqrt(max(1, prediction)))
-    return max(.5, math.sqrt((len(vals) * sd * sd + 8 * prior * prior) /
-                               (len(vals) + 8)))
+
+    return max(
+        .5,
+        math.sqrt(
+            (len(vals) * sd * sd + 8 * prior * prior)
+            / (len(vals) + 8)
+        )
+    )
 
 
-def calibrated_half_width(stat, player, recent, projected, prediction,
-                          past_results, tip):
-    eligible = [r for r in past_results
-                if (parse_time(r.get("tipoff_utc")) or datetime.max.replace(tzinfo=UTC)) < tip
-                and str(r.get("error_" + stat, "")).strip() != ""]
+def calibrated_half_width(
+    stat, player, recent, projected,
+    prediction, past_results, tip
+):
+    eligible = [
+        r for r in past_results
+        if (
+            parse_time(r.get("tipoff_utc"))
+            or datetime.max.replace(tzinfo=UTC)
+        ) < tip
+        and str(r.get("error_" + stat, "")).strip() != ""
+    ]
+
     if len(eligible) < 30:
         return None
-    pooled = quantile([n(r.get("error_" + stat)) for r in eligible])
-    personal = [n(r.get("error_" + stat)) for r in eligible
-                if str(r.get("player_id")) == str(player.get("player_id"))]
-    individual = quantile(personal) if len(personal) >= 8 else pooled
+
+    pooled = quantile([
+        n(r.get("error_" + stat))
+        for r in eligible
+    ])
+
+    personal = [
+        n(r.get("error_" + stat))
+        for r in eligible
+        if str(r.get("player_id"))
+        == str(player.get("player_id"))
+    ]
+
+    individual = (
+        quantile(personal)
+        if len(personal) >= 8 else pooled
+    )
+
     blend = len(personal) / (len(personal) + 25)
     prior = max(.5, math.sqrt(max(1, prediction)))
-    scale = clamp(player_variability(stat, recent, player, projected, prediction) /
-                  prior, .65, 1.8)
-    return max(.25, (pooled * (1 - blend) + individual * blend) * scale)
+
+    scale = clamp(
+        player_variability(
+            stat, recent, player, projected, prediction
+        ) / prior,
+        .65, 1.8
+    )
+
+    return max(
+        .25,
+        (pooled * (1 - blend) + individual * blend) * scale
+    )
 
 
 def main():
@@ -314,10 +371,11 @@ def main():
     defense = read_csv("nba_opponent_defense.csv")
     pace = read_csv("nba_team_pace.csv")
     injuries = read_csv("nba_injuries.csv")
-        history = read_csv(HISTORY)
-       
-    # Correct saved game dates to Chicago local time.
-    # Do not change game IDs or original predictions.
+
+    history = read_csv(HISTORY)
+    previous_results = read_csv(RESULTS)
+
+    # FIX: Correct historical dates to Chicago local time.
     corrected_dates = 0
 
     for record in history:
@@ -333,14 +391,22 @@ def main():
             corrected_dates += 1
 
     print("Historical game dates corrected:", corrected_dates)
-    previous_results = read_csv(RESULTS)
-    # Only manually confirmed in-game injuries are excluded from adjusted MAE.
+
+    # Confirmed in-game injuries are excluded
+    # from injury-adjusted MAE.
     confirmed_injuries = {}
+
     for entry in read_csv(IN_GAME_INJURIES):
-        if norm(entry.get("confirmed")) not in {"YES", "TRUE", "1"}:
+        if norm(entry.get("confirmed")) not in {
+            "YES", "TRUE", "1"
+        }:
             continue
-        key = (str(entry.get("game_key", "")).strip(),
-               str(entry.get("player_id", "")).strip())
+
+        key = (
+            str(entry.get("game_key", "")).strip(),
+            str(entry.get("player_id", "")).strip()
+        )
+
         if all(key):
             confirmed_injuries[key] = entry.get("note", "")
 
@@ -367,7 +433,8 @@ def main():
         )
 
     pace_map = {
-        norm(row.get("team")): row for row in pace
+        norm(row.get("team")): row
+        for row in pace
     }
 
     defense_baselines = defaultdict(lambda: [0.0, 0.0])
@@ -383,6 +450,7 @@ def main():
                 row.get("position", ""),
                 stat
             )
+
             baseline = defense_baselines[key]
             baseline[0] += (
                 count * n(row.get(stat + "_allowed_pg"))
@@ -392,6 +460,7 @@ def main():
     def pace_factor(team, opponent):
         own = pace_map.get(norm(team))
         other = pace_map.get(norm(opponent))
+
         if not own or not other:
             return 1.0
 
@@ -401,10 +470,13 @@ def main():
         if a <= 0 or b <= 0:
             return 1.0
 
-        return clamp(((a + b) / 2) / a, .90, 1.10)
+        return clamp(
+            ((a + b) / 2) / a, .90, 1.10
+        )
 
     def defense_pace(opponent):
         row = pace_map.get(norm(opponent))
+
         if not row:
             return 1.0
 
@@ -425,12 +497,16 @@ def main():
             row.get("position", ""),
             stat
         )
+
         total, games = defense_baselines[key]
 
         if games <= 0 or total <= 0:
             return 1.0
 
-        season_allowed = n(row.get(stat + "_allowed_pg"))
+        season_allowed = n(
+            row.get(stat + "_allowed_pg")
+        )
+
         recent_samples = [
             log for log in logs
             if norm(log.get("opponent")) == norm(opponent)
@@ -439,23 +515,39 @@ def main():
             and minutes(log) > 0
             and str(log.get(stat, "")).strip() != ""
             and (
-                norm(log.get("position")) == norm(row.get("position"))
+                norm(log.get("position"))
+                == norm(row.get("position"))
                 if row.get("position_type") == "position"
-                else position_group(log.get("position")) == norm(row.get("position"))
+                else position_group(log.get("position"))
+                == norm(row.get("position"))
             )
         ]
-        recent_samples.sort(key=lambda log: date_value(log.get("date")), reverse=True)
+
+        recent_samples.sort(
+            key=lambda log: date_value(log.get("date")),
+            reverse=True
+        )
+
         recent_samples = recent_samples[:25]
+
         recent_allowed = (
-            sum(n(log.get(stat)) for log in recent_samples) / len(recent_samples)
+            sum(n(log.get(stat)) for log in recent_samples)
+            / len(recent_samples)
             if recent_samples else season_allowed
         )
-        recent_weight = min(.25, len(recent_samples) / 100)
-        blended = season_allowed * (1-recent_weight) + recent_allowed * recent_weight
+
+        recent_weight = min(
+            .25, len(recent_samples) / 100
+        )
+
+        blended = (
+            season_allowed * (1 - recent_weight)
+            + recent_allowed * recent_weight
+        )
+
         raw = blended / (total / games)
 
-        if stat in PACE_STATS:
-            raw *= defense_pace(opponent)
+        raw *= defense_pace(opponent)
 
         sample = n(row.get("player_games"))
 
@@ -501,7 +593,7 @@ def main():
 
     new_snapshots = 0
 
-    # Create snapshots ONLY for upcoming games.
+    # Save predictions for upcoming games only.
     for game in schedule:
         tip = parse_time(game.get("date_utc"))
 
@@ -532,15 +624,17 @@ def main():
                 n(p.get("minutes_pg"))
                 for p in roster if is_out(p)
             )
-            available = any(
-                not is_out(p) for p in roster
-            )
 
             healthy_minutes = sum(
-                n(p.get("minutes_pg")) for p in roster
-                if not is_out(p)
+                n(p.get("minutes_pg"))
+                for p in roster if not is_out(p)
             )
-            boosts[team] = (absent, healthy_minutes, len(roster))
+
+            boosts[team] = (
+                absent,
+                healthy_minutes,
+                len(roster)
+            )
 
         for player in players:
             team = norm(player.get("team"))
@@ -580,29 +674,55 @@ def main():
                 if played else season_minutes
             )
 
-            last10_minutes = played[:10]
             last5_minutes = played[:5]
+
             recent5_average = (
                 sum(last5_minutes) / len(last5_minutes)
                 if last5_minutes else season_minutes
             )
-            base_projected = (
 
+            base_projected = (
                 .45 * season_minutes
                 + .35 * recent_average
                 + .20 * recent5_average
             )
+
             base_projected += clamp(
-                recent5_average - recent_average, -3, 3
+                recent5_average - recent_average,
+                -3, 3
             ) * .25
+
             absent, healthy_minutes, roster_count = boosts[team]
-            share = season_minutes / healthy_minutes if healthy_minutes > 0 else 0
-            extra_minutes = min(base_projected * .12, absent * share * .35)
-            projected = clamp(base_projected + extra_minutes, 0, 48)
+
+            share = (
+                season_minutes / healthy_minutes
+                if healthy_minutes > 0 else 0
+            )
+
+            extra_minutes = min(
+                base_projected * .12,
+                absent * share * .35
+            )
+
+            projected = clamp(
+                base_projected + extra_minutes, 0, 48
+            )
+
             boost = (
-                min(.04, (absent / 240) * .10 *
-                    (season_minutes / max(1, healthy_minutes / max(1, roster_count))))
-                if absent > 0 and healthy_minutes > 0 else 0
+                min(
+                    .04,
+                    (absent / 240) * .10 *
+                    (
+                        season_minutes /
+                        max(
+                            1,
+                            healthy_minutes /
+                            max(1, roster_count)
+                        )
+                    )
+                )
+                if absent > 0 and healthy_minutes > 0
+                else 0
             )
 
             position = next(
@@ -618,7 +738,8 @@ def main():
                 (
                     row for row in defense
                     if norm(row.get("opponent")) == opponent
-                    and norm(row.get("position")) == norm(position)
+                    and norm(row.get("position"))
+                    == norm(position)
                     and row.get("position_type") == "position"
                 ),
                 None
@@ -626,6 +747,7 @@ def main():
 
             if defense_row is None:
                 grouped = position_group(position)
+
                 defense_row = next(
                     (
                         row for row in defense
@@ -654,22 +776,32 @@ def main():
             for stat in STATS:
                 baseline = n(player.get(stat + "_pg"))
                 season_rate = baseline / season_minutes
+
                 l10 = sample_rate(
                     recent[:10], stat, season_rate
                 )
+
                 l5 = sample_rate(
                     recent[:5], stat, season_rate
                 )
 
                 df = defense_factor(
-                    defense_row, stat, opponent, game_day
+                    defense_row,
+                    stat,
+                    opponent,
+                    game_day
                 )
+
                 pf = pace_factor(team, opponent)
 
                 if stat == "three_pointers":
                     prediction = predict_three(
-                        player, recent, projected,
-                        df, pf, boost
+                        player,
+                        recent,
+                        projected,
+                        df,
+                        pf,
+                        boost
                     )
                 else:
                     if stat == "points":
@@ -691,7 +823,6 @@ def main():
                             + .20 * l5
                         )
                     elif stat in ("steals", "blocks"):
-                        # Rare-event estimates favor season data.
                         weighted_rate = (
                             .60 * season_rate
                             + .25 * l10
@@ -709,17 +840,26 @@ def main():
                 record["pred_" + stat] = round(
                     prediction, 3
                 )
+
                 record["baseline_" + stat] = round(
                     baseline, 3
                 )
+
                 width = calibrated_half_width(
-                    stat, player, recent, projected, prediction,
-                    previous_results, tip
+                    stat,
+                    player,
+                    recent,
+                    projected,
+                    prediction,
+                    previous_results,
+                    tip
                 )
+
                 record["range_low_" + stat] = (
                     round(max(0, prediction - width), 3)
                     if width is not None else ""
                 )
+
                 record["range_high_" + stat] = (
                     round(prediction + width, 3)
                     if width is not None else ""
@@ -729,9 +869,10 @@ def main():
             existing.add((game_key, pid))
             new_snapshots += 1
 
+    # Save corrected historical dates and new predictions.
     write_csv(HISTORY, HISTORY_FIELDS, history)
 
-    # Score completed games with genuine pregame snapshots.
+    # Score completed games.
     results = []
     missing_logs = 0
     incomplete = 0
@@ -748,12 +889,10 @@ def main():
 
         saved = parse_time(record.get("saved_utc"))
 
-        # Do not accept snapshots without a valid pregame timestamp.
         if saved is None or saved >= tip:
             late += 1
             continue
 
-        # Wait for player logs to become available.
         if NOW < tip + timedelta(hours=2):
             waiting += 1
             continue
@@ -788,7 +927,6 @@ def main():
             )
         )
 
-        # Avoid ambiguous games against the same opponent.
         if len(candidates) > 1:
             first = abs(
                 (
@@ -796,12 +934,14 @@ def main():
                     - game_day
                 ).days
             )
+
             second = abs(
                 (
                     date_value(candidates[1].get("date"))
                     - game_day
                 ).days
             )
+
             if first == second:
                 missing_logs += 1
                 continue
@@ -816,10 +956,20 @@ def main():
             continue
 
         result = dict(record)
-        injury_key = (str(record.get("game_key", "")).strip(),
-                      str(record.get("player_id", "")).strip())
-        result["injury_excluded"] = int(injury_key in confirmed_injuries)
-        result["injury_note"] = confirmed_injuries.get(injury_key, "")
+
+        injury_key = (
+            str(record.get("game_key", "")).strip(),
+            str(record.get("player_id", "")).strip()
+        )
+
+        result["injury_excluded"] = int(
+            injury_key in confirmed_injuries
+        )
+
+        result["injury_note"] = confirmed_injuries.get(
+            injury_key, ""
+        )
+
         result["actual_minutes"] = round(
             minutes(actual), 2
         )
@@ -831,19 +981,24 @@ def main():
             )
 
             result["actual_" + stat] = actual_value
+
             result["error_" + stat] = round(
                 abs(predicted_value - actual_value),
                 3
             )
+
             low = record.get("range_low_" + stat, "")
             high = record.get("range_high_" + stat, "")
+
             result["covered_" + stat] = (
                 int(n(low) <= actual_value <= n(high))
-                if str(low).strip() and str(high).strip() else ""
+                if str(low).strip() and str(high).strip()
+                else ""
             )
 
         results.append(result)
 
+    # Results inherit the corrected Chicago dates.
     write_csv(RESULTS, RESULT_FIELDS, results)
 
     print()
@@ -860,11 +1015,13 @@ def main():
     if results:
         print()
         print("MEAN ABSOLUTE ERROR")
+
         for stat in STATS:
             errors = [
                 n(row.get("error_" + stat))
                 for row in results
             ]
+
             print(
                 f"{stat}: {sum(errors) / len(errors):.2f}"
             )
