@@ -1,118 +1,200 @@
 
-name: Update NBA Stats and Schedule
+"""
+COURTSIDE — NBA ACCURACY TRACKER
 
-"on":
-  schedule:
-    - cron: "7 0-11,13-23 * * *"
-    - cron: "22,37,52 * * * *"
-    - cron: "7 12 * * *"
-    - cron: "0 6,7 * * *"
+Saves pregame predictions, scores completed NBA games,
+tracks six player stats, and excludes confirmed in-game
+injuries from injury-adjusted accuracy.
 
-  workflow_dispatch:
-    inputs:
-      save_predictions:
-        description: "Save predictions for today's upcoming games?"
-        required: true
-        type: boolean
-        default: false
+Game dates use America/Chicago local time.
+"""
 
-permissions:
-  contents: write
+import csv
+import os
+import math
+import re
+import unicodedata
+from collections import defaultdict
+from statistics import median
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-concurrency:
-  group: courtside-nba-updates
-  cancel-in-progress: false
+UTC = timezone.utc
+CHICAGO = ZoneInfo("America/Chicago")
+NOW = datetime.now(UTC)
 
-jobs:
-  update:
-    name: Refresh NBA Data
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+STATS = (
+    "points", "rebounds", "assists",
+    "three_pointers", "steals", "blocks"
+)
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+HISTORY = Path("nba_prediction_history.csv")
+RESULTS = Path("nba_prediction_results.csv")
+IN_GAME_INJURIES = Path("nba_in_game_injuries.csv")
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+HISTORY_FIELDS = [
+    "game_key", "game_date", "tipoff_utc", "saved_utc",
+    "player_id", "player_name", "team", "opponent",
+    "projected_minutes", "position", "baseline_games", "model_version"
+] + [f"pred_{s}" for s in STATS] + [
+    f"baseline_{s}" for s in STATS
+] + [f"range_low_{s}" for s in STATS] + [
+    f"range_high_{s}" for s in STATS
+]
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas requests
+RESULT_FIELDS = HISTORY_FIELDS + [
+    "injury_excluded", "injury_note", "actual_minutes"
+] + [f"actual_{s}" for s in STATS] + [
+    f"error_{s}" for s in STATS
+] + [f"covered_{s}" for s in STATS]
 
-      - name: Refresh NBA stats and game logs
-        run: python update_nba.py
+ATTEMPT_KEYS = [
+    "three_pointers_attempted",
+    "three_point_attempts",
+    "three_point_attempted",
+    "three_pointers_attempts",
+    "three_point_attempts_pg",
+    "three_pointers_attempted_pg",
+    "three_pa",
+    "three_pa_pg",
+    "three_point_attempts_per_game",
+    "three_pointers_attempted_per_game",
+    "fg3a",
+    "fg3a_pg",
+    "3pa",
+    "3pa_pg"
+]
 
-      - name: Update NBA schedule
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          github.event.schedule == '7 12 * * *' ||
-          github.event.schedule == '0 6,7 * * *'
-        run: python update_schedule.py
 
-      - name: Update NBA news and injuries
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          github.event.schedule == '7 12 * * *' ||
-          github.event.schedule == '0 6,7 * * *'
-        run: python update_news_injuries.py
+def read_csv(path):
+    path = Path(path)
+    if not path.exists():
+        return []
+    with path.open("r", newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
 
-      - name: Check prediction save window
-        id: prediction_window
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
-          MANUAL_SAVE: ${{ inputs.save_predictions }}
-        run: |
-          SAVE=0
-          CHICAGO_HOUR=$(TZ=America/Chicago date +%H)
 
-          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_SAVE" == "true" ]]; then
-            SAVE=1
-          elif [[ "$EVENT_NAME" == "schedule" && "$EVENT_SCHEDULE" == "0 6,7 * * *" && "$CHICAGO_HOUR" == "01" ]]; then
-            SAVE=1
-          fi
+def write_csv(path, fields, rows):
+    columns = list(fields)
+    for row in rows:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
 
-          echo "save=$SAVE" >> "$GITHUB_OUTPUT"
+    with Path(path).open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=columns, extrasaction="ignore"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
 
-      - name: Update prediction accuracy
-        env:
-          COURTSIDE_SAVE_PREDICTIONS: ${{ steps.prediction_window.outputs.save }}
-          COURTSIDE_MANUAL_SAVE: ${{ github.event_name == 'workflow_dispatch' && inputs.save_predictions && '1' || '0' }}
-        run: python update_accuracy.py
 
-      - name: Detect in-game injuries
-        run: python detect_in_game_injuries.py
+def n(value):
+    try:
+        if value is None or str(value).strip() == "":
+            return 0.0
+        x = float(value)
+        return x if math.isfinite(x) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
-      - name: Refresh injury-adjusted results
-        env:
-          COURTSIDE_SAVE_PREDICTIONS: "0"
-          COURTSIDE_MANUAL_SAVE: "0"
-        run: python update_accuracy.py
 
-      - name: Run daily model backtest
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          github.event.schedule == '7 12 * * *' ||
-          github.event.schedule == '0 6,7 * * *'
-        run: python backtest_formulas.py
+def clamp(x, low, high):
+    return max(low, min(high, x))
 
-      - name: Commit refreshed data
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add nba_*.csv
+def norm(x):
+    return str(x or "").strip().upper()
 
-          if ! git diff --cached --quiet; then
-            git commit -m "Update Courtside data and accuracy"
-            git push
-          fi
+
+def name_key(x):
+    text = unicodedata.normalize("NFKD", str(x or ""))
+    text = "".join(
+        c for c in text if not unicodedata.combining(c)
+    )
+    return re.sub(r"[^a-z]", "", text.lower())
+
+
+def parse_time(value):
+    try:
+        d = datetime.fromisoformat(
+            str(value or "").replace("Z", "+00:00")
+        )
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=UTC)
+        return d.astimezone(UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def date_value(value):
+    value = str(value or "").strip()
+    try:
+        if len(value) >= 10 and value[4] == "-":
+            return datetime.strptime(
+                value[:10], "%Y-%m-%d"
+            ).date()
+
+        if len(value) >= 8 and value[:8].isdigit():
+            return datetime.strptime(
+                value[:8], "%Y%m%d"
+            ).date()
+    except ValueError:
+        pass
+    return None
+
+
+def local_date(tip):
+    return tip.astimezone(CHICAGO).date()
+
+
+def minutes(row):
+    for key in ("minutes", "minutes_played", "minutes_pg"):
+        value = row.get(key)
+        if value is not None and str(value).strip() != "":
+            return n(value)
+    return 0.0
+
+
+def attempts(row):
+    for key in ATTEMPT_KEYS:
+        if key in row and str(row[key] or "").strip() != "":
+            return n(row[key])
+    return None
+
+
+def position_group(position):
+    p = norm(position)
+    if p in ("PG", "SG", "G"):
+        return "G"
+    if p in ("SF", "PF", "F"):
+        return "F"
+    return "C" if p == "C" else ""
+
+
+def sample_rate(logs, stat, fallback):
+    valid = [
+        row for row in logs
+        if minutes(row) > 0
+        and str(row.get(stat, "")).strip() != ""
+    ]
+    total = sum(minutes(row) for row in valid)
+    if total <= 0:
+        return fallback
+    return sum(n(row.get(stat)) for row in valid) / total
+
+
+def attempt_rate(logs, fallback):
+    valid = [
+        row for row in logs
+        if minutes(row) > 0 and attempts(row) is not None
+    ]
+    total = sum(minutes(row) for row in valid)
+    if total <= 0:
+        return fallback
+    return sum(attempts(row) for row in valid) / total
+
           
 def predict_three(player, recent, projected, df, pf, boost):
     season_minutes = n(player.get("minutes_pg"))
