@@ -3,11 +3,16 @@ name: Update NBA Stats and Schedule
 
 on:
   schedule:
-    - cron: '7 0-11,13-23 * * *'
-    - cron: '22,37,52 * * * *'
-    - cron: '7 12 * * *'
-    # 1:00 AM Central: 06:00 UTC during daylight time, 07:00 UTC in standard time.
-    - cron: '0 6,7 * * *'
+    # Regular NBA data updates
+    - cron: "7 0-11,13-23 * * *"
+    - cron: "22,37,52 * * * *"
+    - cron: "7 12 * * *"
+
+    # 1:00 AM Central Time
+    # 06:00 UTC during daylight saving time
+    # 07:00 UTC during standard time
+    - cron: "0 6,7 * * *"
+
   workflow_dispatch:
 
 permissions:
@@ -19,50 +24,70 @@ concurrency:
 
 jobs:
   update:
+    name: Refresh NBA Data
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
+
       - name: Install dependencies
-        run: pip install pandas requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests
+
       - name: Refresh NBA stats and game logs
         run: python update_nba.py
-      - name: Update schedule
-        if: github.event_name == 'workflow_dispatch' || (github.event.schedule == '7 12 * * *' || github.event.schedule == '0 6,7 * * *')
+
+      - name: Update NBA schedule
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.event.schedule == '7 12 * * *' ||
+          github.event.schedule == '0 6,7 * * *'
         run: python update_schedule.py
-      - name: Update news and injury reports
-        if: github.event_name == 'workflow_dispatch' || (github.event.schedule == '7 12 * * *' || github.event.schedule == '0 6,7 * * *')
+
+      - name: Update NBA news and injuries
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.event.schedule == '7 12 * * *' ||
+          github.event.schedule == '0 6,7 * * *'
         run: python update_news_injuries.py
-      - name: Score finished games and save daily snapshots
+
+      - name: Update prediction accuracy
         env:
           COURTSIDE_SAVE_PREDICTIONS: ${{ github.event_name == 'schedule' && github.event.schedule == '0 6,7 * * *' && '1' || '0' }}
         run: python update_accuracy.py
+
       - name: Detect in-game injuries
         run: python detect_in_game_injuries.py
+
       - name: Refresh injury-adjusted results
+        env:
+          COURTSIDE_SAVE_PREDICTIONS: "0"
         run: python update_accuracy.py
-      - name: Backtest once daily
-        if: github.event_name == 'workflow_dispatch' || (github.event.schedule == '7 12 * * *' || github.event.schedule == '0 6,7 * * *')
+
+      - name: Run daily model backtest
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.event.schedule == '7 12 * * *' ||
+          github.event.schedule == '0 6,7 * * *'
         run: python backtest_formulas.py
-      - name: 
+
       - name: Commit refreshed data
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add nba_*.csv
+
           if ! git diff --cached --quiet; then
             git commit -m "Update Courtside data and accuracy"
             git push
           fi
-
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add nba_*.csv
-          if ! git diff --cached --quiet; then
-            git commit -m 'Update Courtside data and accuracy'
-            git push
