@@ -3,17 +3,18 @@ name: Update NBA Stats and Schedule
 
 on:
   schedule:
-    # Regular NBA data updates
     - cron: "7 0-11,13-23 * * *"
     - cron: "22,37,52 * * * *"
     - cron: "7 12 * * *"
-
-    # 1:00 AM Central Time
-    # 06:00 UTC during daylight saving time
-    # 07:00 UTC during standard time
     - cron: "0 6,7 * * *"
 
   workflow_dispatch:
+    inputs:
+      save_predictions:
+        description: "Save predictions for today's upcoming games?"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -59,9 +60,29 @@ jobs:
           github.event.schedule == '0 6,7 * * *'
         run: python update_news_injuries.py
 
+      - name: Check prediction save window
+        id: prediction_window
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_SAVE: ${{ inputs.save_predictions }}
+        run: |
+          SAVE=0
+          CHICAGO_HOUR=$(TZ=America/Chicago date +%H)
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_SAVE" == "true" ]]; then
+            SAVE=1
+          elif [[ "$EVENT_NAME" == "schedule" && "$EVENT_SCHEDULE" == "0 6,7 * * *" && "$CHICAGO_HOUR" == "01" ]]; then
+            SAVE=1
+          fi
+
+          echo "save=$SAVE" >> "$GITHUB_OUTPUT"
+
       - name: Update prediction accuracy
         env:
-          COURTSIDE_SAVE_PREDICTIONS: ${{ github.event_name == 'schedule' && github.event.schedule == '0 6,7 * * *' && '1' || '0' }}
+          COURTSIDE_SAVE_PREDICTIONS: ${{ steps.prediction_window.outputs.save }}
+          COURTSIDE_MANUAL_SAVE: ${{ github.event_name == 'workflow_dispatch' && inputs.save_predictions && '1' || '0' }}
         run: python update_accuracy.py
 
       - name: Detect in-game injuries
@@ -70,6 +91,7 @@ jobs:
       - name: Refresh injury-adjusted results
         env:
           COURTSIDE_SAVE_PREDICTIONS: "0"
+          COURTSIDE_MANUAL_SAVE: "0"
         run: python update_accuracy.py
 
       - name: Run daily model backtest
@@ -84,7 +106,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add nba_*.csv
 
           if ! git diff --cached --quiet; then
