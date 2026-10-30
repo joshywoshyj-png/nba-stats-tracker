@@ -113,3 +113,1172 @@ jobs:
             git commit -m "Update Courtside data and accuracy"
             git push
           fi
+          
+def predict_three(player, recent, projected, df, pf, boost):
+    season_minutes = n(player.get("minutes_pg"))
+    season_makes = n(player.get("three_pointers_pg"))
+    season_attempts = attempts(player)
+
+    def fallback():
+        sr = (
+            season_makes / season_minutes
+            if season_minutes > 0 else 0
+        )
+        l10 = sample_rate(
+            recent[:10], "three_pointers", sr
+        )
+        valid = [
+            row for row in recent
+            if minutes(row) > 0
+            and str(row.get("three_pointers", "")).strip() != ""
+        ]
+        games = n(player.get("games_played"))
+        sw = games / (games + 12)
+        stable = sw * sr + (1 - sw) * l10
+        rw = len(valid) / (len(valid) + 10)
+        return (
+            projected * ((1 - rw) * stable + rw * l10)
+            * df * pf * (1 + boost)
+        )
+
+    if (
+        season_attempts is None
+        or season_attempts <= 0
+        or season_minutes <= 0
+    ):
+        return max(0, fallback())
+
+    if not any(
+        minutes(row) > 0 and attempts(row) is not None
+        for row in recent
+    ):
+        return max(0, fallback())
+
+    season_attempt_rate = season_attempts / season_minutes
+
+    l10 = attempt_rate(recent[:10], season_attempt_rate)
+    l5 = attempt_rate(recent[:5], season_attempt_rate)
+
+    projected_attempts = projected * (
+        .50 * season_attempt_rate
+        + .30 * l10
+        + .20 * l5
+    )
+
+    season_pct = clamp(
+        season_makes / season_attempts, 0, 1
+    )
+
+    valid = [
+        row for row in recent[:10]
+        if minutes(row) > 0
+        and attempts(row) is not None
+        and str(row.get("three_pointers", "")).strip() != ""
+    ]
+
+    recent_attempts = sum(attempts(row) for row in valid)
+    recent_makes = sum(
+        n(row.get("three_pointers")) for row in valid
+    )
+
+    expected_pct = clamp(
+        (recent_makes + 60 * season_pct)
+        / (recent_attempts + 60),
+        0, 1
+    )
+
+    return max(
+        0,
+        projected_attempts * expected_pct
+        * df * pf * (1 + boost)
+    )
+
+
+def quantile(values, q=.8):
+    if not values:
+        return None
+    values = sorted(values)
+    idx = min(
+        len(values) - 1,
+        max(0, math.ceil(q * (len(values) + 1)) - 1)
+    )
+    return values[idx]
+
+
+def player_variability(stat, recent, player, projected, prediction):
+    vals = [
+        n(row.get(stat)) * projected / minutes(row)
+        for row in recent[:20]
+        if minutes(row) > 0
+        and str(row.get(stat, "")).strip() != ""
+    ]
+
+    mean = sum(vals) / len(vals) if vals else 0
+
+    sd = (
+        math.sqrt(
+            sum((v - mean) ** 2 for v in vals)
+            / (len(vals) - 1)
+        )
+        if len(vals) >= 3
+        else math.sqrt(max(1, prediction))
+    )
+
+    prior = max(.5, math.sqrt(max(1, prediction)))
+
+    return max(
+        .5,
+        math.sqrt(
+            (len(vals) * sd * sd + 8 * prior * prior)
+            / (len(vals) + 8)
+        )
+    )
+
+
+def calibrated_half_width(
+    stat, player, recent, projected,
+    prediction, past_results, tip
+):
+    eligible = [
+        r for r in past_results
+        if (
+            parse_time(r.get("tipoff_utc"))
+            or datetime.max.replace(tzinfo=UTC)
+        ) < tip
+        and str(r.get("error_" + stat, "")).strip() != ""
+    ]
+
+    if len(eligible) < 30:
+        return None
+
+    pooled = quantile([
+        n(r.get("error_" + stat))
+        for r in eligible
+    ])
+
+    personal = [
+        n(r.get("error_" + stat))
+        for r in eligible
+        if str(r.get("player_id"))
+        == str(player.get("player_id"))
+    ]
+
+    individual = (
+        quantile(personal)
+        if len(personal) >= 8 else pooled
+    )
+
+    blend = len(personal) / (len(personal) + 25)
+    prior = max(.5, math.sqrt(max(1, prediction)))
+
+    scale = clamp(
+        player_variability(
+            stat, recent, player, projected, prediction
+        ) / prior,
+        .65, 1.8
+    )
+
+    return max(
+        .25,
+        (pooled * (1 - blend) + individual * blend) * scale
+    )
+
+
+def prior_rest_factor(recent, game_day):
+    """Small, conservative adjustment when the player's prior game was yesterday."""
+    days = [
+        (game_day - d).days
+        for row in recent
+        if (d := date_value(row.get("date"))) and d < game_day
+    ]
+    if not days:
+        return 1.0
+    return 0.985 if min(days) == 1 else 1.0
+
+def historical_bias(stat, player_id, past_results, tip):
+    """Shrink signed pregame residuals toward zero; never train on future games."""
+    eligible = [
+        r for r in past_results
+        if (t := parse_time(r.get("tipoff_utc"))) and t < tip
+        and str(r.get("injury_excluded", "0")).lower()
+        not in ("1", "true", "yes")
+        and str(r.get("actual_" + stat, "")).strip()
+        and str(r.get("pred_" + stat, "")).strip()
+    ]
+
+    if len(eligible) < 40:
+        return 0.0
+
+    pool = [
+        n(r["actual_" + stat]) - n(r["pred_" + stat])
+        for r in eligible
+    ]
+
+    personal = [
+        n(r["actual_" + stat]) - n(r["pred_" + stat])
+        for r in eligible
+        if str(r.get("player_id")) == str(player_id)
+    ]
+
+    pooled = sum(pool) / len(pool)
+    own = sum(personal) / len(personal) if personal else pooled
+    shrink = len(personal) / (len(personal) + 30)
+
+    return clamp(
+        .20 * pooled + .30 * shrink * (own - pooled),
+        -1.5, 1.5
+    )
+
+
+def optimized_blend(stat, past_results, tip):
+    """Conservative pregame-only MAE optimization, with chronological validation.
+
+    Uses immutable, previously saved forecasts and season baselines.
+    Only games completed before tipoff are eligible.
+    """
+
+    samples = []
+
+    for row in past_results:
+        t = parse_time(row.get("tipoff_utc"))
+
+        if (
+            not t
+            or t >= tip
+            or str(row.get("injury_excluded", "0")).lower()
+            in ("1", "true", "yes")
+        ):
+            continue
+
+        keys = [
+            "pred_" + stat,
+            "baseline_" + stat,
+            "actual_" + stat
+        ]
+
+        if any(
+            not str(row.get(k, "")).strip()
+            for k in keys
+        ):
+            continue
+
+        vals = [n(row[k]) for k in keys]
+
+        if not all(math.isfinite(v) for v in vals):
+            continue
+
+        samples.append((t, *vals))
+
+    samples.sort(key=lambda row: row[0])
+
+    if len(samples) < 100:
+        return 1.0
+
+    # Keep entire dates together to prevent leakage.
+    dates = sorted({
+        local_date(row[0]) for row in samples
+    })
+
+    if len(dates) < 6:
+        return 1.0
+
+    boundary = dates[
+        max(1, int(len(dates) * .75))
+    ]
+
+    train = [
+        row for row in samples
+        if local_date(row[0]) < boundary
+    ]
+
+    holdout = [
+        row for row in samples
+        if local_date(row[0]) >= boundary
+    ]
+
+    if len(train) < 70 or len(holdout) < 25:
+        return 1.0
+
+    def mae(rows, weight):
+        return sum(
+            abs(weight * p + (1 - weight) * b - a)
+            for _, p, b, a in rows
+        ) / len(rows)
+
+    candidates = (0.0, .25, .5, .75, 1.0)
+
+    best = min(
+        candidates,
+        key=lambda w: mae(train, w)
+    )
+
+    score = mae(holdout, best)
+
+    # Only apply an adjustment if it improves
+    # on both the original model and baseline.
+    if score >= .99 * min(
+        mae(holdout, 1.0),
+        mae(holdout, 0.0)
+    ):
+        return 1.0
+
+    return round(.75 * best + .25, 3)
+
+
+def main():
+    players = read_csv("nba_stats.csv")
+    logs = read_csv("nba_game_logs.csv")
+    schedule = read_csv("nba_schedule.csv")
+    defense = read_csv("nba_opponent_defense.csv")
+    pace = read_csv("nba_team_pace.csv")
+    injuries = read_csv("nba_injuries.csv")
+
+    history = read_csv(HISTORY)
+    previous_results = read_csv(RESULTS)
+
+    # Correct historical dates to Chicago local time.
+    corrected_dates = 0
+
+    for record in history:
+        tip = parse_time(record.get("tipoff_utc"))
+
+        if tip is None:
+            continue
+
+        correct_date = local_date(tip).isoformat()
+
+        if record.get("game_date") != correct_date:
+            record["game_date"] = correct_date
+            corrected_dates += 1
+
+    print(
+        "Historical game dates corrected:",
+        corrected_dates
+    )
+
+    # Exclude confirmed in-game injuries
+    # from injury-adjusted accuracy.
+    confirmed_injuries = {}
+
+    for entry in read_csv(IN_GAME_INJURIES):
+        if norm(entry.get("confirmed")) not in {
+            "YES", "TRUE", "1"
+        }:
+            continue
+
+        key = (
+            str(entry.get("game_key", "")).strip(),
+            str(entry.get("player_id", "")).strip()
+        )
+
+        if all(key):
+            confirmed_injuries[key] = entry.get("note", "")
+
+    print("COURTSIDE ACCURACY UPDATE")
+    print("Players:", len(players))
+    print("Game logs:", len(logs))
+    print("Schedule games:", len(schedule))
+    print("Existing snapshots:", len(history))
+
+    logs_by_player = defaultdict(list)
+
+    for log in logs:
+        pid = str(log.get("player_id", ""))
+
+        if pid:
+            logs_by_player[pid].append(log)
+
+    for entries in logs_by_player.values():
+        entries.sort(
+            key=lambda row: (
+                date_value(row.get("date"))
+                or datetime.min.date()
+            ),
+            reverse=True
+        )
+
+    pace_map = {
+        norm(row.get("team")): row
+        for row in pace
+    }
+
+    defense_baselines = defaultdict(
+        lambda: [0.0, 0.0]
+    )
+
+    for row in defense:
+        count = n(row.get("player_games"))
+
+        if count <= 0:
+            continue
+
+        for stat in STATS:
+            key = (
+                row.get("position_type", ""),
+                row.get("position", ""),
+                stat
+            )
+
+            baseline = defense_baselines[key]
+
+            baseline[0] += (
+                count * n(
+                    row.get(stat + "_allowed_pg")
+                )
+            )
+            baseline[1] += count
+
+    def pace_factor(team, opponent):
+        own = pace_map.get(norm(team))
+        other = pace_map.get(norm(opponent))
+
+        if not own or not other:
+            return 1.0
+
+        a = n(own.get("adjusted_pace"))
+        b = n(other.get("adjusted_pace"))
+
+        if a <= 0 or b <= 0:
+            return 1.0
+
+        return clamp(
+            ((a + b) / 2) / a, .90, 1.10
+        )
+
+    def defense_pace(opponent):
+        row = pace_map.get(norm(opponent))
+
+        if not row:
+            return 1.0
+
+        league = n(row.get("league_average_pace"))
+        opp = n(row.get("adjusted_pace"))
+
+        if league <= 0 or opp <= 0:
+            return 1.0
+
+        return clamp(league / opp, .85, 1.15)
+
+    def defense_factor(row, stat, opponent, game_day):
+        if not row:
+            return 1.0
+
+        key = (
+            row.get("position_type", ""),
+            row.get("position", ""),
+            stat
+        )
+
+        baseline_total, baseline_count = (
+            defense_baselines[key]
+        )
+
+        if baseline_count <= 0:
+            return 1.0
+
+        baseline = baseline_total / baseline_count
+
+        allowed = n(row.get(stat + "_allowed_pg"))
+        sample = n(row.get("player_games"))
+
+        if baseline <= 0 or sample <= 0:
+            return 1.0
+
+        ratio = allowed / baseline
+
+        # Shrink small defensive samples toward average.
+        confidence = sample / (sample + 50)
+
+        return clamp(
+            1 + confidence * (ratio - 1),
+            .85, 1.15
+        )
+
+    defense_by_opponent = defaultdict(list)
+
+    for row in defense:
+        opponent = norm(
+            row.get("team")
+            or row.get("opponent")
+        )
+
+        if opponent:
+            defense_by_opponent[opponent].append(row)
+
+    injury_by_player = defaultdict(list)
+
+    for row in injuries:
+        pid = str(row.get("player_id", "")).strip()
+        player_name = name_key(
+            row.get("player_name")
+            or row.get("name")
+        )
+
+        if pid:
+            injury_by_player[pid].append(row)
+
+        if player_name:
+            injury_by_player[player_name].append(row)
+
+    def injury_adjustment(player):
+        pid = str(player.get("player_id", "")).strip()
+        pname = name_key(
+            player.get("player_name")
+            or player.get("name")
+        )
+
+        reports = (
+            injury_by_player.get(pid, [])
+            + injury_by_player.get(pname, [])
+        )
+
+        if not reports:
+            return 1.0
+
+        statuses = " ".join(
+            norm(
+                row.get("status")
+                or row.get("injury_status")
+            )
+            for row in reports
+        )
+
+        if "OUT" in statuses:
+            return 0.0
+
+        if "DOUBTFUL" in statuses:
+            return .20
+
+        if "QUESTIONABLE" in statuses:
+            return .90
+
+        if "PROBABLE" in statuses:
+            return .98
+
+        return 1.0
+
+    def find_defense(opponent, position):
+        options = defense_by_opponent.get(
+            norm(opponent), []
+        )
+
+        group = position_group(position)
+
+        for row in options:
+            if norm(row.get("position")) == norm(position):
+                return row
+
+        for row in options:
+            if position_group(row.get("position")) == group:
+                return row
+
+        return None
+
+    def player_recent(player, game_day):
+        pid = str(player.get("player_id", "")).strip()
+
+        return [
+            row
+            for row in logs_by_player.get(pid, [])
+            if (
+                (d := date_value(row.get("date")))
+                and d < game_day
+                and minutes(row) > 0
+            )
+        ]
+
+    # Save only today's future games, never tomorrow's.
+    chicago_now = NOW.astimezone(CHICAGO)
+    today_ct = chicago_now.date()
+
+    manual_save = (
+        os.environ.get("COURTSIDE_MANUAL_SAVE") == "1"
+    )
+
+    scheduled_save = (
+        os.environ.get("COURTSIDE_SAVE_PREDICTIONS") == "1"
+        and chicago_now.hour == 1
+    )
+
+    save_predictions = manual_save or scheduled_save
+
+    print("Chicago date:", today_ct)
+    print("Manual prediction save:", manual_save)
+    print("Scheduled prediction save:", scheduled_save)
+    print("Saving predictions:", save_predictions)
+
+    existing_keys = {
+        (
+            str(row.get("game_key", "")),
+            str(row.get("player_id", ""))
+        )
+        for row in history
+    }
+
+    new_predictions = 0
+
+    for game in schedule:
+        tip = parse_time(game.get("date_utc"))
+
+        if (
+            not save_predictions
+            or tip is None
+            or tip <= NOW
+            or local_date(tip) != today_ct
+        ):
+            continue
+
+        home = norm(game.get("home"))
+        away = norm(game.get("away"))
+
+        if not home or not away:
+            continue
+
+        game_day = local_date(tip)
+        game_key = f"{tip.isoformat()}|{away}|{home}"
+
+        boosts = {}
+
+        for team in (home, away):
+            roster = [
+                p for p in players
+                if norm(p.get("team")) == team
+                and n(p.get("games_played")) > 0
+            ]
+
+            absent = sum(
+                n(p.get("minutes_pg"))
+                for p in roster
+                if injury_adjustment(p) == 0
+            )
+
+            healthy_minutes = sum(
+                n(p.get("minutes_pg"))
+                for p in roster
+                if injury_adjustment(p) > 0
+            )
+
+            boosts[team] = (
+                absent,
+                healthy_minutes,
+                len(roster)
+            )
+
+        for player in players:
+            team = norm(player.get("team"))
+
+            if team not in (home, away):
+                continue
+
+            pid = str(player.get("player_id", "")).strip()
+
+            if not pid or injury_adjustment(player) == 0:
+                continue
+
+            if (game_key, pid) in existing_keys:
+                continue
+
+            games = n(player.get("games_played"))
+            season_minutes = n(player.get("minutes_pg"))
+
+            if games <= 0 or season_minutes <= 0:
+                continue
+
+            opponent = away if team == home else home
+            recent = player_recent(player, game_day)[:10]
+
+            played = [
+                minutes(row)
+                for row in recent
+                if minutes(row) > 0
+            ]
+
+            recent_average = (
+                sum(played) / len(played)
+                if played else season_minutes
+            )
+
+            last5_minutes = played[:5]
+
+            recent5_average = (
+                sum(last5_minutes) / len(last5_minutes)
+                if last5_minutes else season_minutes
+            )
+
+            base_projected = (
+                .45 * season_minutes
+                + .35 * recent_average
+                + .20 * recent5_average
+            )
+
+            base_projected += clamp(
+                recent5_average - recent_average,
+                -3, 3
+            ) * .25
+
+            absent, healthy_minutes, roster_count = boosts[team]
+
+            share = (
+                season_minutes / healthy_minutes
+                if healthy_minutes > 0 else 0
+            )
+
+            extra_minutes = min(
+                base_projected * .12,
+                absent * share * .35
+            )
+
+            projected = clamp(
+                (
+                    base_projected + extra_minutes
+                ) * prior_rest_factor(recent, game_day),
+                0,
+                48
+            )
+
+            projected *= injury_adjustment(player)
+
+            if projected <= 0:
+                continue
+
+            boost = (
+                min(
+                    .04,
+                    (absent / 240) * .10
+                    * (
+                        season_minutes
+                        / max(
+                            1,
+                            healthy_minutes / max(1, roster_count)
+                        )
+                    )
+                )
+                if absent > 0 and healthy_minutes > 0
+                else 0
+            )
+
+            position = (
+                player.get("position")
+                or next(
+                    (
+                        row.get("position")
+                        for row in recent
+                        if row.get("position")
+                    ),
+                    ""
+                )
+            )
+
+            defense_row = find_defense(
+                opponent, position
+            )
+
+            record = {
+                "game_key": game_key,
+                "game_date": game_day.isoformat(),
+                "tipoff_utc": tip.isoformat(),
+                "saved_utc": NOW.isoformat(),
+                "player_id": pid,
+                "player_name": player.get(
+                    "player_name", ""
+                ),
+                "team": team,
+                "opponent": opponent,
+                "projected_minutes": round(projected, 2),
+                "position": position,
+                "baseline_games": games,
+                "model_version": "optimized-v3-ppm"
+            }
+
+            for stat in STATS:
+                baseline = n(
+                    player.get(stat + "_pg")
+                )
+
+                season_rate = (
+                    baseline / season_minutes
+                )
+
+                l10 = sample_rate(
+                    recent[:10], stat, season_rate
+                )
+
+                l5 = sample_rate(
+                    recent[:5], stat, season_rate
+                )
+
+                df = defense_factor(
+                    defense_row,
+                    stat,
+                    opponent,
+                    game_day
+                )
+
+                pf = pace_factor(team, opponent)
+
+                if stat == "three_pointers":
+                    prediction = predict_three(
+                        player,
+                        recent,
+                        projected,
+                        df,
+                        pf,
+                        boost
+                    )
+
+                else:
+                    if stat == "points":
+                        weighted_rate = (
+                            .55 * season_rate
+                            + .30 * l10
+                            + .15 * l5
+                        )
+
+                    elif stat == "rebounds":
+                        weighted_rate = (
+                            .50 * season_rate
+                            + .30 * l10
+                            + .20 * l5
+                        )
+
+                    elif stat == "assists":
+                        weighted_rate = (
+                            .45 * season_rate
+                            + .35 * l10
+                            + .20 * l5
+                        )
+
+                    elif stat in ("steals", "blocks"):
+                        weighted_rate = (
+                            .60 * season_rate
+                            + .25 * l10
+                            + .15 * l5
+                        )
+
+                    else:
+                        weighted_rate = season_rate
+
+                    prediction = max(
+                        0,
+                        projected * weighted_rate
+                        * df * pf * (1 + boost)
+                    )
+
+                # Combine per-minute estimates with
+                # the player's season per-game average.
+                prediction = (
+                    .75 * prediction
+                    + .25 * baseline
+                )
+
+                blend_weight = optimized_blend(
+                    stat, previous_results, tip
+                )
+
+                prediction = (
+                    blend_weight * prediction
+                    + (1 - blend_weight) * baseline
+                )
+
+                prediction = max(
+                    0,
+                    prediction + historical_bias(
+                        stat,
+                        pid,
+                        previous_results,
+                        tip
+                    )
+                )
+
+                record["pred_" + stat] = round(
+                    prediction, 3
+                )
+
+                record["baseline_" + stat] = round(
+                    baseline, 3
+                )
+
+                width = calibrated_half_width(
+                    stat,
+                    player,
+                    recent,
+                    projected,
+                    prediction,
+                    previous_results,
+                    tip
+                )
+
+                record["range_low_" + stat] = (
+                    round(max(0, prediction - width), 3)
+                    if width is not None else ""
+                )
+
+                record["range_high_" + stat] = (
+                    round(prediction + width, 3)
+                    if width is not None else ""
+                )
+
+            history.append(record)
+            existing_keys.add((game_key, pid))
+            new_predictions += 1
+
+    # Preserve previous predictions and append new ones.
+    write_csv(HISTORY, HISTORY_FIELDS, history)
+
+    print("New predictions saved:", new_predictions)
+    print("Total saved predictions:", len(history))
+
+    # Match saved predictions to completed game logs.
+    # Never overwrite original pregame estimates.
+
+    results_by_key = {
+        (
+            str(row.get("game_key", "")),
+            str(row.get("player_id", ""))
+        ): row
+        for row in previous_results
+    }
+
+    logs_by_player_date = defaultdict(list)
+
+    for log in logs:
+        pid = str(log.get("player_id", "")).strip()
+        game_day = date_value(log.get("date"))
+
+        if pid and game_day:
+            logs_by_player_date[(pid, game_day)].append(log)
+
+    new_results = 0
+    updated_results = 0
+
+    for prediction in history:
+        tip = parse_time(prediction.get("tipoff_utc"))
+
+        if tip is None or tip >= NOW:
+            continue
+
+        game_day = local_date(tip)
+        pid = str(prediction.get("player_id", "")).strip()
+
+        candidates = logs_by_player_date.get(
+            (pid, game_day), []
+        )
+
+        # Some data sources record NBA games using
+        # the UTC date instead of the Chicago date.
+        if not candidates:
+            candidates = logs_by_player_date.get(
+                (pid, tip.date()), []
+            )
+
+        candidates = [
+            row for row in candidates
+            if minutes(row) > 0
+        ]
+
+        if not candidates:
+            continue
+
+        opponent = norm(prediction.get("opponent"))
+
+        matched = [
+            row for row in candidates
+            if norm(
+                row.get("opponent")
+                or row.get("opp")
+            ) == opponent
+        ]
+
+        if matched:
+            actual = matched[0]
+        elif len(candidates) == 1:
+            actual = candidates[0]
+        else:
+            continue
+
+        # Require all six actual statistics before
+        # considering the game fully scored.
+        if any(
+            str(actual.get(stat, "")).strip() == ""
+            for stat in STATS
+        ):
+            continue
+
+        result = dict(prediction)
+        result["actual_minutes"] = round(
+            minutes(actual), 2
+        )
+
+        injury_key = (
+            str(prediction.get("game_key", "")),
+            pid
+        )
+
+        injury_note = confirmed_injuries.get(
+            injury_key, ""
+        )
+
+        result["injury_excluded"] = (
+            "1" if injury_key in confirmed_injuries
+            else "0"
+        )
+        result["injury_note"] = injury_note
+
+        for stat in STATS:
+            predicted = n(
+                prediction.get("pred_" + stat)
+            )
+
+            observed = n(actual.get(stat))
+
+            result["actual_" + stat] = round(
+                observed, 3
+            )
+
+            result["error_" + stat] = round(
+                abs(predicted - observed), 3
+            )
+
+            low = prediction.get(
+                "range_low_" + stat, ""
+            )
+
+            high = prediction.get(
+                "range_high_" + stat, ""
+            )
+
+            if (
+                str(low).strip() != ""
+                and str(high).strip() != ""
+            ):
+                result["covered_" + stat] = (
+                    "1"
+                    if n(low) <= observed <= n(high)
+                    else "0"
+                )
+            else:
+                result["covered_" + stat] = ""
+
+        key = (
+            str(prediction.get("game_key", "")),
+            pid
+        )
+
+        if key in results_by_key:
+            old = results_by_key[key]
+
+            # Keep the original prediction and
+            # any additional historical columns.
+            old.update({
+                k: v
+                for k, v in result.items()
+                if (
+                    k.startswith("actual_")
+                    or k.startswith("error_")
+                    or k.startswith("covered_")
+                    or k in (
+                        "injury_excluded",
+                        "injury_note"
+                    )
+                )
+            })
+
+            updated_results += 1
+
+        else:
+            results_by_key[key] = result
+            new_results += 1
+
+    results = list(results_by_key.values())
+
+    results.sort(
+        key=lambda row: (
+            str(row.get("game_date", "")),
+            str(row.get("game_key", "")),
+            str(row.get("player_id", ""))
+        )
+    )
+
+    write_csv(RESULTS, RESULT_FIELDS, results)
+
+    print("New completed-game results:", new_results)
+    print("Existing results refreshed:", updated_results)
+    print("Total scored player-games:", len(results))
+
+    # Calculate model MAE and season-baseline MAE.
+    # Confirmed in-game injuries are excluded from
+    # the adjusted comparison.
+
+    eligible_results = [
+        row for row in results
+        if str(
+            row.get("injury_excluded", "0")
+        ).lower() not in ("1", "true", "yes")
+    ]
+
+    print()
+    print("PREDICTION ACCURACY")
+    print("-" * 58)
+
+    for stat in STATS:
+        usable = [
+            row for row in eligible_results
+            if (
+                str(row.get("actual_" + stat, "")).strip()
+                and str(row.get("pred_" + stat, "")).strip()
+                and str(row.get("baseline_" + stat, "")).strip()
+            )
+        ]
+
+        if not usable:
+            print(f"{stat}: No completed results")
+            continue
+
+        model_mae = sum(
+            abs(
+                n(row.get("pred_" + stat))
+                - n(row.get("actual_" + stat))
+            )
+            for row in usable
+        ) / len(usable)
+
+        baseline_mae = sum(
+            abs(
+                n(row.get("baseline_" + stat))
+                - n(row.get("actual_" + stat))
+            )
+            for row in usable
+        ) / len(usable)
+
+        coverage_rows = [
+            row for row in usable
+            if str(
+                row.get("covered_" + stat, "")
+            ).strip() in ("0", "1")
+        ]
+
+        coverage = (
+            100 * sum(
+                n(row.get("covered_" + stat))
+                for row in coverage_rows
+            ) / len(coverage_rows)
+            if coverage_rows else None
+        )
+
+        print(
+            f"{stat.upper():16s}"
+            f" Model MAE: {model_mae:.3f}"
+            f" | Baseline MAE: {baseline_mae:.3f}"
+            f" | Games: {len(usable)}"
+            + (
+                f" | Range coverage: {coverage:.1f}%"
+                if coverage is not None else ""
+            )
+        )
+
+    print()
+    print("COURTSIDE UPDATE COMPLETE")
+
+
+if __name__ == "__main__":
+    main()
